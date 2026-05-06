@@ -7,7 +7,9 @@ import {
   Users, PhoneOff, X, FileText, Image, File,
   Bell, BellOff, Crown, Trash2, UserPlus, Mic, MicOff,
   Volume2, VolumeX, Grid3x3, MoreHorizontal, VideoOff,
-  ChevronRight,
+  ChevronRight, Reply, Forward, Copy, Download, Trash,
+  FilePlus, FileIcon, FileImage, FileVideo, FileAudio, FileArchive,
+  FileSpreadsheet, FileType, ArrowDown,
 } from "lucide-react";
 import { cn, getAvatarColor, getInitials } from "@/lib/utils";
 import { apiRequest, fetchJson } from "@/lib/api";
@@ -88,6 +90,28 @@ function getMediaAccessErrorMessage(error: unknown, action: "call" | "screen-sha
 
 const EMOJI_LIST = ["ðŸ˜€","ðŸ˜‚","ðŸ‘","â¤ï¸","ðŸŽ‰","ðŸ”¥","ðŸ‘€","ðŸ™","ðŸ’¯","âœ…","ðŸš€","ðŸ˜Ž","ðŸ¤”","ðŸ’¡","ðŸ“Œ","âœ¨","ðŸŽ¯","ðŸ“Š","ðŸ†","ðŸ‘"];
 const ACTIVE_CONVERSATION_STORAGE_KEY = "cloudspace:talk:activeConversationId";
+
+const QUICK_REACTIONS = ["👍","❤️","😂","🎉","👀","🔥"];
+
+function parseAttachmentMessage(content: string): { name: string; path: string } | null {
+  if (!content.startsWith("Shared file: ")) return null;
+  const lines = content.split("\n");
+  if (lines.length < 2) return null;
+  return { name: lines[0].replace("Shared file: ", ""), path: lines[1] };
+}
+
+function getFileIcon(name: string) {
+  const ext = name.split('.').pop()?.toLowerCase() || '';
+  if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp'].includes(ext)) return FileImage;
+  if (['mp4', 'mkv', 'avi', 'mov', 'webm'].includes(ext)) return FileVideo;
+  if (['mp3', 'wav', 'ogg', 'flac', 'aac'].includes(ext)) return FileAudio;
+  if (['zip', 'rar', '7z', 'tar', 'gz'].includes(ext)) return FileArchive;
+  if (['xls', 'xlsx', 'csv', 'ods'].includes(ext)) return FileSpreadsheet;
+  if (['pdf'].includes(ext)) return FileType;
+  if (['doc', 'docx', 'txt', 'rtf', 'md'].includes(ext)) return FileText;
+  return FileIcon;
+}
+
 
 type TalkDirectoryUser = {
   id: string;
@@ -323,80 +347,285 @@ function DateSeparator({ date }: { date: string }) {
 
 // â”€â”€â”€ Message Bubble â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
+// --- Attachment Bubble ---
+
+function AttachmentBubble({ name, path, isSent }: { name: string; path: string; isSent: boolean }) {
+  const Icon = getFileIcon(name);
+  const ext = name.split(“.”).pop()?.toUpperCase() || “FILE”;
+  return (
+    <div className={cn(
+      “flex items-center gap-3 rounded-xl p-3 min-w-[220px] max-w-[320px] border”,
+      isSent ? “bg-primary/10 border-primary/20” : “bg-muted/60 border-border”
+    )}>
+      <div className={cn(
+        “h-10 w-10 rounded-lg flex items-center justify-center shrink-0”,
+        isSent ? “bg-primary/20 text-primary” : “bg-muted text-muted-foreground”
+      )}>
+        <Icon size={20} />
+      </div>
+      <div className=”flex-1 min-w-0”>
+        <p className=”text-sm font-medium truncate”>{name}</p>
+        <p className=”text-[11px] text-muted-foreground”>{ext} file</p>
+      </div>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button className=”h-8 w-8 rounded-lg flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted/80 shrink-0”>
+            <Download size={14} />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent>Download</TooltipContent>
+      </Tooltip>
+    </div>
+  );
+}
+
+// --- Unread Divider ---
+
+function UnreadDivider() {
+  return (
+    <div className=”flex items-center gap-3 my-3”>
+      <div className=”flex-1 h-px bg-destructive/40” />
+      <span className=”text-xs text-destructive font-medium px-2”>New messages</span>
+      <div className=”flex-1 h-px bg-destructive/40” />
+    </div>
+  );
+}
+
+// --- Reply Preview (in composer) ---
+
+function ReplyPreviewBar({ replyTo, onCancel }: { replyTo: Message; onCancel: () => void }) {
+  return (
+    <div className=”flex items-center gap-2 px-3 py-2 border-t bg-muted/30”>
+      <div className=”w-0.5 h-8 bg-primary rounded-full shrink-0” />
+      <div className=”flex-1 min-w-0”>
+        <p className=”text-[11px] font-medium text-primary”>{replyTo.senderName}</p>
+        <p className=”text-xs text-muted-foreground truncate”>{replyTo.content}</p>
+      </div>
+      <button onClick={onCancel} className=”h-6 w-6 rounded flex items-center justify-center hover:bg-muted shrink-0”>
+        <X size={12} />
+      </button>
+    </div>
+  );
+}
+
 function MessageBubble({
   message: m,
   isSent,
   showAvatar,
   showSenderName,
-  searchQuery = "",
+  searchQuery = “”,
+  allMessages = [],
+  onReply,
+  onForward,
+  onReact,
 }: {
   message: Message;
   isSent: boolean;
   showAvatar: boolean;
   showSenderName: boolean;
   searchQuery?: string;
+  allMessages?: Message[];
+  onReply?: (msg: Message) => void;
+  onForward?: (msg: Message) => void;
+  onReact?: (msgId: number, emoji: string) => void;
 }) {
+  const [showActions, setShowActions] = useState(false);
+  const [showReactions, setShowReactions] = useState(false);
   const reactions = m.reactions ? JSON.parse(m.reactions) as Record<string, number> : null;
   const normalizedSearch = searchQuery.trim().toLowerCase();
   const matchesSearch =
     normalizedSearch.length > 0 &&
     (m.content.toLowerCase().includes(normalizedSearch) || m.senderName.toLowerCase().includes(normalizedSearch));
+
+  const attachment = parseAttachmentMessage(m.content);
+  const replyToMsg = m.replyToId ? allMessages.find((msg) => msg.id === m.replyToId) : null;
+
   const bubbleClass = cn(
-    "rounded-2xl px-3.5 py-2 text-sm",
-    isSent ? "bg-primary text-primary-foreground rounded-br-sm" : "bg-muted rounded-bl-sm",
-    matchesSearch && "ring-2 ring-amber-300/80 dark:ring-amber-500/60",
+    “rounded-2xl px-3.5 py-2 text-sm”,
+    isSent ? “bg-primary text-primary-foreground rounded-br-sm” : “bg-muted rounded-bl-sm”,
+    matchesSearch && “ring-2 ring-amber-300/80 dark:ring-amber-500/60”,
   );
+
+  const renderContent = () => {
+    if (attachment) {
+      return <AttachmentBubble name={attachment.name} path={attachment.path} isSent={isSent} />;
+    }
+    return (
+      <div className={bubbleClass}>
+        {replyToMsg && (
+          <div className={cn(
+            “flex items-center gap-2 mb-1.5 pb-1.5 border-b”,
+            isSent ? “border-primary-foreground/20” : “border-border”
+          )}>
+            <div className={cn(“w-0.5 h-6 rounded-full shrink-0”, isSent ? “bg-primary-foreground/40” : “bg-primary”)} />
+            <div className=”min-w-0”>
+              <p className={cn(“text-[10px] font-medium”, isSent ? “text-primary-foreground/70” : “text-primary”)}>{replyToMsg.senderName}</p>
+              <p className={cn(“text-[11px] truncate”, isSent ? “text-primary-foreground/60” : “text-muted-foreground”)}>{replyToMsg.content}</p>
+            </div>
+          </div>
+        )}
+        {m.content}
+      </div>
+    );
+  };
+
+  const renderReactions = () => {
+    if (!reactions) return null;
+    return (
+      <div className={cn(“flex gap-1 mt-1 flex-wrap”, isSent && “justify-end”)}>
+        {Object.entries(reactions).map(([emoji, count]) => (
+          <button
+            key={emoji}
+            onClick={() => onReact?.(m.id, emoji)}
+            className=”bg-muted border rounded-full px-2 py-0.5 text-xs cursor-pointer hover:bg-accent transition-colors”
+          >
+            {emoji} {count}
+          </button>
+        ))}
+        <button
+          onClick={() => setShowReactions(true)}
+          className=”bg-muted/50 border border-dashed rounded-full px-1.5 py-0.5 text-xs cursor-pointer hover:bg-accent transition-colors text-muted-foreground”
+        >
+          +
+        </button>
+      </div>
+    );
+  };
+
+  const renderActions = () => {
+    if (!showActions) return null;
+    return (
+      <div className={cn(
+        “absolute top-0 flex items-center gap-0.5 bg-background border rounded-lg shadow-sm px-1 py-0.5 z-10”,
+        isSent ? “right-0 -translate-y-full mr-1” : “left-8 -translate-y-full ml-1”
+      )}>
+        {/* Quick reactions */}
+        {QUICK_REACTIONS.map((emoji) => (
+          <button
+            key={emoji}
+            onClick={() => { onReact?.(m.id, emoji); setShowActions(false); }}
+            className=”h-7 w-7 rounded flex items-center justify-center hover:bg-muted text-sm”
+          >
+            {emoji}
+          </button>
+        ))}
+        <div className=”w-px h-5 bg-border mx-0.5” />
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button onClick={() => { onReply?.(m); setShowActions(false); }} className=”h-7 w-7 rounded flex items-center justify-center hover:bg-muted text-muted-foreground”>
+              <Reply size={14} />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>Reply</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button onClick={() => { onForward?.(m); setShowActions(false); }} className=”h-7 w-7 rounded flex items-center justify-center hover:bg-muted text-muted-foreground”>
+              <Forward size={14} />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>Forward</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button onClick={() => { navigator.clipboard.writeText(m.content); setShowActions(false); }} className=”h-7 w-7 rounded flex items-center justify-center hover:bg-muted text-muted-foreground”>
+              <Copy size={14} />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>Copy</TooltipContent>
+        </Tooltip>
+      </div>
+    );
+  };
 
   if (isSent) {
     return (
-      <div className={cn("flex items-end gap-2 max-w-[70%] ml-auto flex-row-reverse", !showAvatar && "mt-0.5")}>
+      <div
+        className={cn(“flex items-end gap-2 max-w-[70%] ml-auto flex-row-reverse relative group”, !showAvatar && “mt-0.5”)}
+        onMouseEnter={() => setShowActions(true)}
+        onMouseLeave={() => setShowActions(false)}
+      >
+        {renderActions()}
         <div>
-          <div className={bubbleClass}>
-            {m.content}
-          </div>
-          <span className="text-[11px] text-muted-foreground mt-1 mr-1 text-right block">
-            {formatMessageTime(m.sentAt)} Â· âœ“âœ“
+          {renderContent()}
+          <span className=”text-[11px] text-muted-foreground mt-1 mr-1 text-right block”>
+            {formatMessageTime(m.sentAt)}
           </span>
-          {reactions && (
-            <div className="flex gap-1 mt-1 justify-end">
-              {Object.entries(reactions).map(([emoji, count]) => (
-                <span key={emoji} className="bg-muted border rounded-full px-2 py-0.5 text-xs cursor-pointer hover:bg-accent">
-                  {emoji} {count}
-                </span>
-              ))}
-            </div>
-          )}
+          {renderReactions()}
         </div>
       </div>
     );
   }
 
   return (
-    <div className={cn("flex items-end gap-2 max-w-[70%]", !showAvatar && "mt-0.5 ml-[32px]")}>
-      {showAvatar ? (
-        <Avatar name={m.senderName} size={24} />
-      ) : null}
+    <div
+      className={cn(“flex items-end gap-2 max-w-[70%] relative group”, !showAvatar && “mt-0.5 ml-[32px]”)}
+      onMouseEnter={() => setShowActions(true)}
+      onMouseLeave={() => setShowActions(false)}
+    >
+      {showAvatar ? <Avatar name={m.senderName} size={24} /> : null}
+      {renderActions()}
       <div>
         {showSenderName && (
-          <span className="text-[11px] text-muted-foreground mb-1 ml-1 block">{m.senderName}</span>
+          <span className=”text-[11px] text-muted-foreground mb-1 ml-1 block”>{m.senderName}</span>
         )}
-        <div className={bubbleClass}>
-          {m.content}
-        </div>
-        <span className="text-[11px] text-muted-foreground mt-1 ml-1 block">
+        {renderContent()}
+        <span className=”text-[11px] text-muted-foreground mt-1 ml-1 block”>
           {formatMessageTime(m.sentAt)}
         </span>
-        {reactions && (
-          <div className="flex gap-1 mt-1">
-            {Object.entries(reactions).map(([emoji, count]) => (
-              <span key={emoji} className="bg-muted border rounded-full px-2 py-0.5 text-xs cursor-pointer hover:bg-accent">
-                {emoji} {count}
-              </span>
-            ))}
-          </div>
-        )}
+        {renderReactions()}
       </div>
     </div>
+  );
+}
+
+// --- Forward Dialog ---
+
+function ForwardDialog({
+  open,
+  onClose,
+  message,
+  conversations,
+  onForward,
+}: {
+  open: boolean;
+  onClose: () => void;
+  message: Message | null;
+  conversations: Conversation[];
+  onForward: (conversationId: number) => void;
+}) {
+  const [search, setSearch] = useState(“”);
+  const filtered = search
+    ? conversations.filter((c) => c.name.toLowerCase().includes(search.toLowerCase()))
+    : conversations;
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => { if (!v) onClose(); }}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Forward message</DialogTitle>
+        </DialogHeader>
+        {message && (
+          <div className=”bg-muted/50 rounded-lg p-3 mb-3 text-sm”>
+            <p className=”text-[11px] text-muted-foreground mb-1”>{message.senderName}</p>
+            <p className=”truncate”>{message.content}</p>
+          </div>
+        )}
+        <Input placeholder=”Search conversations...” value={search} onChange={(e) => setSearch(e.target.value)} className=”mb-2” />
+        <div className=”space-y-1 max-h-[250px] overflow-y-auto”>
+          {filtered.map((c) => (
+            <button
+              key={c.id}
+              onClick={() => { onForward(c.id); onClose(); }}
+              className=”w-full flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-muted transition-colors”
+            >
+              <Avatar name={c.name} size={32} isGroup={c.type === “group”} />
+              <span className=”text-sm font-medium truncate”>{c.name}</span>
+            </button>
+          ))}
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -1155,6 +1384,9 @@ export default function Talk() {
   const [localVideoEnabled, setLocalVideoEnabled] = useState(false);
   const [remoteMedia, setRemoteMedia] = useState<RemoteCallMedia[]>([]);
   const [isUploadingAttachment, setIsUploadingAttachment] = useState(false);
+  const [replyTo, setReplyTo] = useState<Message | null>(null);
+  const [forwardMessage, setForwardMessage] = useState<Message | null>(null);
+  const [isDraggingFile, setIsDraggingFile] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const attachmentInputRef = useRef<HTMLInputElement>(null);
@@ -1175,6 +1407,7 @@ export default function Talk() {
   const { data: conversationsData } = useQuery({
     queryKey: ["/api/conversations"],
     queryFn: () => fetchJson<{ data: Conversation[] }>("/api/conversations"),
+    refetchInterval: 10000,
   });
 
   const conversations = conversationsData?.data || [];
@@ -1196,6 +1429,7 @@ export default function Talk() {
     queryKey: ["/api/conversations/messages", activeConversationId],
     queryFn: () => fetchJson<{ data: Message[] }>(`/api/conversations/${activeConversationId}/messages`),
     enabled: !!activeConversationId,
+    refetchInterval: 3000,
   });
 
   const { data: messagesData } = messagesQuery;
@@ -1981,6 +2215,8 @@ export default function Talk() {
 
   const handleSelectConversation = useCallback((id: number) => {
     setActiveConversationId(id);
+    setReplyTo(null);
+    setForwardMessage(null);
     queryClient.setQueryData(["/api/conversations"], (old: { data: Conversation[] } | undefined) => {
       if (!old) return old;
       return { data: old.data.map((c) => c.id === id ? { ...c, unreadCount: 0 } : c) };
@@ -2000,7 +2236,7 @@ export default function Talk() {
       content,
       sentAt: new Date().toISOString(),
       reactions: null,
-      replyToId: null,
+      replyToId: replyTo?.id ?? null,
     };
     queryClient.setQueryData(
       ["/api/conversations/messages", activeConversationId],
@@ -2010,9 +2246,10 @@ export default function Talk() {
     );
 
     setComposerContent("");
+    setReplyTo(null);
     if (textareaRef.current) textareaRef.current.style.height = "auto";
     sendMutation.mutate(content);
-  }, [composerContent, activeConversationId, currentUserId, currentUserName, sendMutation, queryClient]);
+  }, [composerContent, activeConversationId, currentUserId, currentUserName, sendMutation, queryClient, replyTo]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -2039,6 +2276,47 @@ export default function Talk() {
   const handleUnavailableAction = useCallback((message: string) => {
     showToast(message);
   }, [showToast]);
+
+  const handleReply = useCallback((msg: Message) => {
+    setReplyTo(msg);
+    textareaRef.current?.focus();
+  }, []);
+
+  const handleForwardMessage = useCallback((msg: Message) => {
+    setForwardMessage(msg);
+  }, []);
+
+  const handleForwardToConversation = useCallback(async (targetConversationId: number) => {
+    if (!forwardMessage) return;
+    try {
+      await apiRequest("POST", `/api/conversations/${targetConversationId}/messages`, {
+        content: forwardMessage.content,
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/conversations"] });
+      showToast("Message forwarded");
+    } catch {
+      showToast("Failed to forward message");
+    }
+    setForwardMessage(null);
+  }, [forwardMessage, queryClient, showToast]);
+
+  const handleReact = useCallback((msgId: number, emoji: string) => {
+    // Optimistic reaction update
+    queryClient.setQueryData(
+      ["/api/conversations/messages", activeConversationId],
+      (old: { data: Message[] } | undefined) => {
+        if (!old) return old;
+        return {
+          data: old.data.map((msg) => {
+            if (msg.id !== msgId) return msg;
+            const reactions = msg.reactions ? JSON.parse(msg.reactions) as Record<string, number> : {};
+            reactions[emoji] = (reactions[emoji] || 0) + 1;
+            return { ...msg, reactions: JSON.stringify(reactions) };
+          }),
+        };
+      }
+    );
+  }, [activeConversationId, queryClient]);
 
   const handleMuteToggle = () => {
     if (!activeConversation) return;
@@ -2087,7 +2365,15 @@ export default function Talk() {
 
   const handleStartDm = (contact: TalkDirectoryUser) => {
     // Check if DM already exists
-    const existing = conversations.find((c) => c.type === "dm" && c.name === contact.displayName);
+    const existing = conversations.find((c) => {
+      if (c.type !== "dm") return false;
+      // Match by name or by member username
+      if (c.name === contact.displayName || c.name === contact.username) return true;
+      try {
+        const members = c.members ? JSON.parse(c.members) as string[] : [];
+        return members.includes(contact.username);
+      } catch { return false; }
+    });
     if (existing) {
       handleSelectConversation(existing.id);
     } else {
@@ -2299,7 +2585,26 @@ export default function Talk() {
 
         {/* â”€â”€â”€ Panel 2: Chat Area â”€â”€â”€ */}
         {activeConversation ? (
-          <div className="flex-1 flex flex-col min-w-0">
+          <div
+            className="flex-1 flex flex-col min-w-0 relative"
+            onDragOver={(e) => { e.preventDefault(); setIsDraggingFile(true); }}
+            onDragLeave={(e) => { if (e.currentTarget === e.target || !e.currentTarget.contains(e.relatedTarget as Node)) setIsDraggingFile(false); }}
+            onDrop={(e) => {
+              e.preventDefault();
+              setIsDraggingFile(false);
+              const file = e.dataTransfer.files?.[0];
+              if (file) void handleAttachmentUpload(file);
+            }}
+          >
+            {/* Drag overlay */}
+            {isDraggingFile && (
+              <div className="absolute inset-0 z-30 bg-primary/5 border-2 border-dashed border-primary rounded-lg flex items-center justify-center pointer-events-none">
+                <div className="text-center">
+                  <FilePlus size={40} className="mx-auto text-primary mb-2" />
+                  <p className="text-sm font-medium text-primary">Drop file to upload</p>
+                </div>
+              </div>
+            )}
             {/* Chat TopBar */}
             <div className="border-b px-4 h-14 flex items-center justify-between flex-shrink-0">
               <div className="flex items-center gap-3">
@@ -2485,6 +2790,10 @@ export default function Talk() {
                         showAvatar={!isSent && !isConsecutive}
                         showSenderName={!isSent && !isConsecutive}
                         searchQuery={chatSearchQuery}
+                        allMessages={messagesList}
+                        onReply={handleReply}
+                        onForward={handleForwardMessage}
+                        onReact={handleReact}
                       />
                     );
                   })}
@@ -2496,6 +2805,11 @@ export default function Talk() {
               )}
               <div ref={messagesEndRef} />
             </div>
+
+            {/* Reply preview */}
+            {replyTo && (
+              <ReplyPreviewBar replyTo={replyTo} onCancel={() => setReplyTo(null)} />
+            )}
 
             {/* Message Composer */}
             <div className="border-t bg-background px-3 py-3 flex-shrink-0">
@@ -2716,6 +3030,15 @@ export default function Talk() {
           </Tabs>
         </DialogContent>
       </Dialog>
+
+      {/* Forward Dialog */}
+      <ForwardDialog
+        open={!!forwardMessage}
+        onClose={() => setForwardMessage(null)}
+        message={forwardMessage}
+        conversations={conversations}
+        onForward={handleForwardToConversation}
+      />
     </>
   );
 }
