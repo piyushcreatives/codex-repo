@@ -25,7 +25,7 @@ import { Badge } from "@/components/ui/badge";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import type { Conversation, Message } from "@shared/schema";
 
-// â”€â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ Helpers â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 function formatMessageTime(dateStr: string) {
   return format(new Date(dateStr), "h:mm a");
@@ -89,7 +89,7 @@ function getMediaAccessErrorMessage(error: unknown, action: "call" | "screen-sha
     : "Unable to access the camera or microphone on this device.";
 }
 
-const EMOJI_LIST = ["ðŸ˜€","ðŸ˜‚","ðŸ‘","â¤ï¸","ðŸŽ‰","ðŸ”¥","ðŸ‘€","ðŸ™","ðŸ’¯","âœ…","ðŸš€","ðŸ˜Ž","ðŸ¤”","ðŸ’¡","ðŸ“Œ","âœ¨","ðŸŽ¯","ðŸ“Š","ðŸ†","ðŸ‘"];
+const EMOJI_LIST = ["😀","😂","👍","❤️","🎉","🔥","👀","🙏","💯","✅","🚀","😎","🤔","💡","📌","✨","🎯","📊","🏆","👋"];
 const ACTIVE_CONVERSATION_STORAGE_KEY = "cloudspace:talk:activeConversationId";
 
 const QUICK_REACTIONS = ["👍","❤️","😂","🎉","👀","🔥"];
@@ -163,7 +163,7 @@ function getPreferredConversationId(conversations: Conversation[]) {
   return conversations[0]?.id ?? null;
 }
 
-// â”€â”€â”€ Toast system â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ Toast system â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 function useToast() {
   const [toast, setToast] = useState<{ message: string; action?: React.ReactNode } | null>(null);
@@ -188,9 +188,9 @@ function ToastOverlay({ toast, onDismiss }: { toast: { message: string; action?:
   );
 }
 
-// â”€â”€â”€ Mock members data â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ Mock members data â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
-// â”€â”€â”€ Types â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ Types â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 type CallState = {
   active: boolean;
@@ -259,7 +259,7 @@ type IncomingCallState = {
   type: "voice" | "video" | "screen";
 };
 
-// â”€â”€â”€ Components â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ Components â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 function Avatar({ name, size = 38, isGroup = false }: { name: string; size?: number; isGroup?: boolean }) {
   const colorClass = getAvatarColor(name);
@@ -282,7 +282,7 @@ function OnlineDot({ size = 8, className }: { size?: number; className?: string 
   );
 }
 
-// â”€â”€â”€ Conversation List Item â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ Conversation List Item â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 function ConversationRow({
   conversation: c,
@@ -334,7 +334,7 @@ function ConversationRow({
   );
 }
 
-// â”€â”€â”€ Date Separator â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ Date Separator â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 function DateSeparator({ date }: { date: string }) {
   return (
@@ -346,31 +346,31 @@ function DateSeparator({ date }: { date: string }) {
   );
 }
 
-// â”€â”€â”€ Message Bubble â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ Message Bubble â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // --- Attachment Bubble ---
 
 function AttachmentBubble({ name, path, isSent }: { name: string; path: string; isSent: boolean }) {
   const Icon = getFileIcon(name);
-  const ext = name.split(“.”).pop()?.toUpperCase() || “FILE”;
+  const ext = name.split(".").pop()?.toUpperCase() || "FILE";
   return (
     <div className={cn(
-      “flex items-center gap-3 rounded-xl p-3 min-w-[220px] max-w-[320px] border”,
-      isSent ? “bg-primary/10 border-primary/20” : “bg-muted/60 border-border”
+      "flex items-center gap-3 rounded-xl p-3 min-w-[220px] max-w-[320px] border",
+      isSent ? "bg-primary/10 border-primary/20" : "bg-muted/60 border-border"
     )}>
       <div className={cn(
-        “h-10 w-10 rounded-lg flex items-center justify-center shrink-0”,
-        isSent ? “bg-primary/20 text-primary” : “bg-muted text-muted-foreground”
+        "h-10 w-10 rounded-lg flex items-center justify-center shrink-0",
+        isSent ? "bg-primary/20 text-primary" : "bg-muted text-muted-foreground"
       )}>
         <Icon size={20} />
       </div>
-      <div className=”flex-1 min-w-0”>
-        <p className=”text-sm font-medium truncate”>{name}</p>
-        <p className=”text-[11px] text-muted-foreground”>{ext} file</p>
+      <div className="flex-1 min-w-0">
+        <p className="text-sm font-medium truncate">{name}</p>
+        <p className="text-[11px] text-muted-foreground">{ext} file</p>
       </div>
       <Tooltip>
         <TooltipTrigger asChild>
-          <button className=”h-8 w-8 rounded-lg flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted/80 shrink-0”>
+          <button className="h-8 w-8 rounded-lg flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted/80 shrink-0">
             <Download size={14} />
           </button>
         </TooltipTrigger>
@@ -384,10 +384,10 @@ function AttachmentBubble({ name, path, isSent }: { name: string; path: string; 
 
 function UnreadDivider() {
   return (
-    <div className=”flex items-center gap-3 my-3”>
-      <div className=”flex-1 h-px bg-destructive/40” />
-      <span className=”text-xs text-destructive font-medium px-2”>New messages</span>
-      <div className=”flex-1 h-px bg-destructive/40” />
+    <div className="flex items-center gap-3 my-3">
+      <div className="flex-1 h-px bg-destructive/40" />
+      <span className="text-xs text-destructive font-medium px-2">New messages</span>
+      <div className="flex-1 h-px bg-destructive/40" />
     </div>
   );
 }
@@ -396,13 +396,13 @@ function UnreadDivider() {
 
 function ReplyPreviewBar({ replyTo, onCancel }: { replyTo: Message; onCancel: () => void }) {
   return (
-    <div className=”flex items-center gap-2 px-3 py-2 border-t bg-muted/30”>
-      <div className=”w-0.5 h-8 bg-primary rounded-full shrink-0” />
-      <div className=”flex-1 min-w-0”>
-        <p className=”text-[11px] font-medium text-primary”>{replyTo.senderName}</p>
-        <p className=”text-xs text-muted-foreground truncate”>{replyTo.content}</p>
+    <div className="flex items-center gap-2 px-3 py-2 border-t bg-muted/30">
+      <div className="w-0.5 h-8 bg-primary rounded-full shrink-0" />
+      <div className="flex-1 min-w-0">
+        <p className="text-[11px] font-medium text-primary">{replyTo.senderName}</p>
+        <p className="text-xs text-muted-foreground truncate">{replyTo.content}</p>
       </div>
-      <button onClick={onCancel} className=”h-6 w-6 rounded flex items-center justify-center hover:bg-muted shrink-0”>
+      <button onClick={onCancel} className="h-6 w-6 rounded flex items-center justify-center hover:bg-muted shrink-0">
         <X size={12} />
       </button>
     </div>
@@ -414,7 +414,7 @@ function MessageBubble({
   isSent,
   showAvatar,
   showSenderName,
-  searchQuery = “”,
+  searchQuery = "",
   allMessages = [],
   onReply,
   onForward,
@@ -442,9 +442,9 @@ function MessageBubble({
   const replyToMsg = m.replyToId ? allMessages.find((msg) => msg.id === m.replyToId) : null;
 
   const bubbleClass = cn(
-    “rounded-2xl px-3.5 py-2 text-sm”,
-    isSent ? “bg-primary text-primary-foreground rounded-br-sm” : “bg-muted rounded-bl-sm”,
-    matchesSearch && “ring-2 ring-amber-300/80 dark:ring-amber-500/60”,
+    "rounded-2xl px-3.5 py-2 text-sm",
+    isSent ? "bg-primary text-primary-foreground rounded-br-sm" : "bg-muted rounded-bl-sm",
+    matchesSearch && "ring-2 ring-amber-300/80 dark:ring-amber-500/60",
   );
 
   const renderContent = () => {
@@ -455,13 +455,13 @@ function MessageBubble({
       <div className={bubbleClass}>
         {replyToMsg && (
           <div className={cn(
-            “flex items-center gap-2 mb-1.5 pb-1.5 border-b”,
-            isSent ? “border-primary-foreground/20” : “border-border”
+            "flex items-center gap-2 mb-1.5 pb-1.5 border-b",
+            isSent ? "border-primary-foreground/20" : "border-border"
           )}>
-            <div className={cn(“w-0.5 h-6 rounded-full shrink-0”, isSent ? “bg-primary-foreground/40” : “bg-primary”)} />
-            <div className=”min-w-0”>
-              <p className={cn(“text-[10px] font-medium”, isSent ? “text-primary-foreground/70” : “text-primary”)}>{replyToMsg.senderName}</p>
-              <p className={cn(“text-[11px] truncate”, isSent ? “text-primary-foreground/60” : “text-muted-foreground”)}>{replyToMsg.content}</p>
+            <div className={cn("w-0.5 h-6 rounded-full shrink-0", isSent ? "bg-primary-foreground/40" : "bg-primary")} />
+            <div className="min-w-0">
+              <p className={cn("text-[10px] font-medium", isSent ? "text-primary-foreground/70" : "text-primary")}>{replyToMsg.senderName}</p>
+              <p className={cn("text-[11px] truncate", isSent ? "text-primary-foreground/60" : "text-muted-foreground")}>{replyToMsg.content}</p>
             </div>
           </div>
         )}
@@ -473,19 +473,19 @@ function MessageBubble({
   const renderReactions = () => {
     if (!reactions) return null;
     return (
-      <div className={cn(“flex gap-1 mt-1 flex-wrap”, isSent && “justify-end”)}>
+      <div className={cn("flex gap-1 mt-1 flex-wrap", isSent && "justify-end")}>
         {Object.entries(reactions).map(([emoji, count]) => (
           <button
             key={emoji}
             onClick={() => onReact?.(m.id, emoji)}
-            className=”bg-muted border rounded-full px-2 py-0.5 text-xs cursor-pointer hover:bg-accent transition-colors”
+            className="bg-muted border rounded-full px-2 py-0.5 text-xs cursor-pointer hover:bg-accent transition-colors"
           >
             {emoji} {count}
           </button>
         ))}
         <button
           onClick={() => setShowReactions(true)}
-          className=”bg-muted/50 border border-dashed rounded-full px-1.5 py-0.5 text-xs cursor-pointer hover:bg-accent transition-colors text-muted-foreground”
+          className="bg-muted/50 border border-dashed rounded-full px-1.5 py-0.5 text-xs cursor-pointer hover:bg-accent transition-colors text-muted-foreground"
         >
           +
         </button>
@@ -497,23 +497,23 @@ function MessageBubble({
     if (!showActions) return null;
     return (
       <div className={cn(
-        “absolute top-0 flex items-center gap-0.5 bg-background border rounded-lg shadow-sm px-1 py-0.5 z-10”,
-        isSent ? “right-0 -translate-y-full mr-1” : “left-8 -translate-y-full ml-1”
+        "absolute top-0 flex items-center gap-0.5 bg-background border rounded-lg shadow-sm px-1 py-0.5 z-10",
+        isSent ? "right-0 -translate-y-full mr-1" : "left-8 -translate-y-full ml-1"
       )}>
         {/* Quick reactions */}
         {QUICK_REACTIONS.map((emoji) => (
           <button
             key={emoji}
             onClick={() => { onReact?.(m.id, emoji); setShowActions(false); }}
-            className=”h-7 w-7 rounded flex items-center justify-center hover:bg-muted text-sm”
+            className="h-7 w-7 rounded flex items-center justify-center hover:bg-muted text-sm"
           >
             {emoji}
           </button>
         ))}
-        <div className=”w-px h-5 bg-border mx-0.5” />
+        <div className="w-px h-5 bg-border mx-0.5" />
         <Tooltip>
           <TooltipTrigger asChild>
-            <button onClick={() => { onReply?.(m); setShowActions(false); }} className=”h-7 w-7 rounded flex items-center justify-center hover:bg-muted text-muted-foreground”>
+            <button onClick={() => { onReply?.(m); setShowActions(false); }} className="h-7 w-7 rounded flex items-center justify-center hover:bg-muted text-muted-foreground">
               <Reply size={14} />
             </button>
           </TooltipTrigger>
@@ -521,7 +521,7 @@ function MessageBubble({
         </Tooltip>
         <Tooltip>
           <TooltipTrigger asChild>
-            <button onClick={() => { onForward?.(m); setShowActions(false); }} className=”h-7 w-7 rounded flex items-center justify-center hover:bg-muted text-muted-foreground”>
+            <button onClick={() => { onForward?.(m); setShowActions(false); }} className="h-7 w-7 rounded flex items-center justify-center hover:bg-muted text-muted-foreground">
               <Forward size={14} />
             </button>
           </TooltipTrigger>
@@ -529,7 +529,7 @@ function MessageBubble({
         </Tooltip>
         <Tooltip>
           <TooltipTrigger asChild>
-            <button onClick={() => { navigator.clipboard.writeText(m.content); setShowActions(false); }} className=”h-7 w-7 rounded flex items-center justify-center hover:bg-muted text-muted-foreground”>
+            <button onClick={() => { navigator.clipboard.writeText(m.content); setShowActions(false); }} className="h-7 w-7 rounded flex items-center justify-center hover:bg-muted text-muted-foreground">
               <Copy size={14} />
             </button>
           </TooltipTrigger>
@@ -542,14 +542,14 @@ function MessageBubble({
   if (isSent) {
     return (
       <div
-        className={cn(“flex items-end gap-2 max-w-[70%] ml-auto flex-row-reverse relative group”, !showAvatar && “mt-0.5”)}
+        className={cn("flex items-end gap-2 max-w-[70%] ml-auto flex-row-reverse relative group", !showAvatar && "mt-0.5")}
         onMouseEnter={() => setShowActions(true)}
         onMouseLeave={() => setShowActions(false)}
       >
         {renderActions()}
         <div>
           {renderContent()}
-          <span className=”text-[11px] text-muted-foreground mt-1 mr-1 text-right block”>
+          <span className="text-[11px] text-muted-foreground mt-1 mr-1 text-right block">
             {formatMessageTime(m.sentAt)}
           </span>
           {renderReactions()}
@@ -560,7 +560,7 @@ function MessageBubble({
 
   return (
     <div
-      className={cn(“flex items-end gap-2 max-w-[70%] relative group”, !showAvatar && “mt-0.5 ml-[32px]”)}
+      className={cn("flex items-end gap-2 max-w-[70%] relative group", !showAvatar && "mt-0.5 ml-[32px]")}
       onMouseEnter={() => setShowActions(true)}
       onMouseLeave={() => setShowActions(false)}
     >
@@ -568,10 +568,10 @@ function MessageBubble({
       {renderActions()}
       <div>
         {showSenderName && (
-          <span className=”text-[11px] text-muted-foreground mb-1 ml-1 block”>{m.senderName}</span>
+          <span className="text-[11px] text-muted-foreground mb-1 ml-1 block">{m.senderName}</span>
         )}
         {renderContent()}
-        <span className=”text-[11px] text-muted-foreground mt-1 ml-1 block”>
+        <span className="text-[11px] text-muted-foreground mt-1 ml-1 block">
           {formatMessageTime(m.sentAt)}
         </span>
         {renderReactions()}
@@ -595,7 +595,7 @@ function ForwardDialog({
   conversations: Conversation[];
   onForward: (conversationId: number) => void;
 }) {
-  const [search, setSearch] = useState(“”);
+  const [search, setSearch] = useState("");
   const filtered = search
     ? conversations.filter((c) => c.name.toLowerCase().includes(search.toLowerCase()))
     : conversations;
@@ -607,21 +607,21 @@ function ForwardDialog({
           <DialogTitle>Forward message</DialogTitle>
         </DialogHeader>
         {message && (
-          <div className=”bg-muted/50 rounded-lg p-3 mb-3 text-sm”>
-            <p className=”text-[11px] text-muted-foreground mb-1”>{message.senderName}</p>
-            <p className=”truncate”>{message.content}</p>
+          <div className="bg-muted/50 rounded-lg p-3 mb-3 text-sm">
+            <p className="text-[11px] text-muted-foreground mb-1">{message.senderName}</p>
+            <p className="truncate">{message.content}</p>
           </div>
         )}
-        <Input placeholder=”Search conversations...” value={search} onChange={(e) => setSearch(e.target.value)} className=”mb-2” />
-        <div className=”space-y-1 max-h-[250px] overflow-y-auto”>
+        <Input placeholder="Search conversations..." value={search} onChange={(e) => setSearch(e.target.value)} className="mb-2" />
+        <div className="space-y-1 max-h-[250px] overflow-y-auto">
           {filtered.map((c) => (
             <button
               key={c.id}
               onClick={() => { onForward(c.id); onClose(); }}
-              className=”w-full flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-muted transition-colors”
+              className="w-full flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-muted transition-colors"
             >
-              <Avatar name={c.name} size={32} isGroup={c.type === “group”} />
-              <span className=”text-sm font-medium truncate”>{c.name}</span>
+              <Avatar name={c.name} size={32} isGroup={c.type === "group"} />
+              <span className="text-sm font-medium truncate">{c.name}</span>
             </button>
           ))}
         </div>
@@ -630,7 +630,7 @@ function ForwardDialog({
   );
 }
 
-// â”€â”€â”€ Typing Indicator â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ Typing Indicator â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 function TypingIndicator({ name }: { name: string }) {
   return (
@@ -649,7 +649,7 @@ function TypingIndicator({ name }: { name: string }) {
   );
 }
 
-// â”€â”€â”€ Voice Call Overlay â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ Voice Call Overlay â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 function VoiceCallOverlay({ callState, onUpdate, onEnd, onScreenShare, onAddParticipant, remoteMedia, currentUsername, availableUsers }: {
   callState: CallState;
@@ -887,7 +887,7 @@ function VoiceCallOverlay({ callState, onUpdate, onEnd, onScreenShare, onAddPart
   );
 }
 
-// â”€â”€â”€ Video Call Overlay â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ Video Call Overlay â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 function StreamRenderer({
   stream,
@@ -1325,7 +1325,7 @@ function VideoCallOverlay({ callState, onUpdate, onEnd, currentUserName, current
   );
 }
 
-// â”€â”€â”€ Incoming Call Notification â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ Incoming Call Notification â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 function IncomingCallBanner({ callerName, type, onAccept, onDecline }: {
   callerName: string;
@@ -1394,7 +1394,7 @@ function IncomingCallBanner({ callerName, type, onAccept, onDecline }: {
   );
 }
 
-// â”€â”€â”€ Info Panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ Info Panel â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 function InfoPanel({
   conversation,
@@ -1688,7 +1688,7 @@ function InfoPanel({
   );
 }
 
-// â”€â”€â”€ Main Talk Page â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ Main Talk Page â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 export default function Talk() {
   const queryClient = useQueryClient();
@@ -2778,7 +2778,7 @@ export default function Talk() {
     ? groupConversations.filter((c) => c.name.toLowerCase().includes(query) || (c.lastMessage || "").toLowerCase().includes(query))
     : groupConversations;
 
-  // People search â€” contacts not already in conversations
+  // People search â€" contacts not already in conversations
   const peopleResults = query
     ? availableUsers.filter((user) => {
         if (!user.displayName.toLowerCase().includes(query) && !user.username.toLowerCase().includes(query)) return false;
@@ -2839,7 +2839,7 @@ export default function Talk() {
           />
         )}
       <div className="flex h-[calc(100vh-var(--topbar-height,56px))] overflow-hidden">
-        {/* â”€â”€â”€ Panel 1: Conversation List â”€â”€â”€ */}
+        {/* â"€â"€â"€ Panel 1: Conversation List â"€â"€â"€ */}
         <div className="w-[280px] flex-shrink-0 border-r flex flex-col bg-background">
           {/* Header */}
           <div className="p-3 flex items-center gap-2">
@@ -2935,7 +2935,7 @@ export default function Talk() {
           </Tabs>
         </div>
 
-        {/* â”€â”€â”€ Panel 2: Chat Area â”€â”€â”€ */}
+        {/* â"€â"€â"€ Panel 2: Chat Area â"€â"€â"€ */}
         {activeConversation ? (
           <div
             className="flex-1 flex flex-col min-w-0 relative"
@@ -3120,7 +3120,7 @@ export default function Talk() {
             <div className="flex-1 overflow-y-auto px-4 py-4 space-y-1">
               {visibleGroupedMessages.length === 0 && hasChatSearch ? (
                 <div className="text-sm text-muted-foreground text-center py-8">
-                  No messages match “{chatSearchQuery}”.
+                  No messages match "{chatSearchQuery}".
                 </div>
               ) : visibleGroupedMessages.map((group, gi) => (
                 <div key={group.date}>
@@ -3253,7 +3253,7 @@ export default function Talk() {
           </div>
         )}
 
-        {/* â”€â”€â”€ Panel 3: Info Panel â”€â”€â”€ */}
+        {/* â"€â"€â"€ Panel 3: Info Panel â"€â"€â"€ */}
         {showInfoPanel && activeConversation && (
           <InfoPanel
             conversation={activeConversation}
@@ -3343,7 +3343,7 @@ export default function Talk() {
                         "h-4 w-4 rounded border flex items-center justify-center",
                         isSelected ? "bg-primary border-primary" : "border-muted-foreground"
                       )}>
-                        {isSelected && <span className="text-white text-[10px]">âœ“</span>}
+                        {isSelected && <span className="text-white text-[10px]">✔</span>}
                       </div>
                       <Avatar name={user.displayName} size={32} />
                       <div className="min-w-0 text-left">

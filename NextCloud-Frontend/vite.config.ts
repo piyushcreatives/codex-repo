@@ -30,14 +30,19 @@ export default defineConfig(({ mode }) => {
       port,
       strictPort: true,
       proxy: {
-        "/api": apiProxyTarget,
+        "/api": {
+          target: apiProxyTarget,
+          secure: false,  // accept self-signed certs
+        },
         "/remote.php": {
           target: nextcloudProxyTarget,
           changeOrigin: true,
+          secure: false,
         },
         "/ocs": {
           target: nextcloudProxyTarget,
           changeOrigin: true,
+          secure: false,
         },
       },
     },

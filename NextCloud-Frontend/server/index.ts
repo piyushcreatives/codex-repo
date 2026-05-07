@@ -1,5 +1,8 @@
 import "./load-env";
 import express from "express";
+import https from "node:https";
+import fs from "node:fs";
+import path from "node:path";
 import { storage } from "./storage";
 import {
   bootstrapDelegatedSession,
@@ -1235,8 +1238,35 @@ app.post("/api/activity/read-all", (_req, res) => {
 app.get("/api/activities", (_req, res) => res.json({ data: storage.getActivities() }));
 
 const PORT = Number(process.env.PORT || 5000);
-app.listen(PORT, () => {
-  console.log(`CloudSpace API server running on http://localhost:${PORT}`);
-  console.log(`Nextcloud upstream: ${process.env.NC_BASE_URL || "http://localhost:8090"}`);
-  console.log(`Mock-backed endpoints: ${ALLOW_MOCK_SERVICES ? "enabled" : "disabled"}`);
-});
+
+// Try HTTPS first (needed for WebRTC camera/mic on LAN), fall back to HTTP
+const certsDir = path.resolve(import.meta.dirname || ".", "certs");
+const certPath = path.join(certsDir, "cert.pem");
+const keyPath = path.join(certsDir, "key.pem");
+
+// Also check project root certs/
+const rootCertsDir = path.resolve(import.meta.dirname || ".", "..", "certs");
+const rootCertPath = path.join(rootCertsDir, "cert.pem");
+const rootKeyPath = path.join(rootCertsDir, "key.pem");
+
+const finalCert = fs.existsSync(certPath) ? certPath : fs.existsSync(rootCertPath) ? rootCertPath : null;
+const finalKey = fs.existsSync(keyPath) ? keyPath : fs.existsSync(rootKeyPath) ? rootKeyPath : null;
+
+if (finalCert && finalKey) {
+  const sslOptions = {
+    key: fs.readFileSync(finalKey),
+    cert: fs.readFileSync(finalCert),
+  };
+  https.createServer(sslOptions, app).listen(PORT, "0.0.0.0", () => {
+    console.log(`CloudSpace API server running on https://0.0.0.0:${PORT}`);
+    console.log(`Nextcloud upstream: ${process.env.NC_BASE_URL || "http://localhost:8090"}`);
+    console.log(`Mock-backed endpoints: ${ALLOW_MOCK_SERVICES ? "enabled" : "disabled"}`);
+  });
+} else {
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`CloudSpace API server running on http://0.0.0.0:${PORT}`);
+    console.log(`Nextcloud upstream: ${process.env.NC_BASE_URL || "http://localhost:8090"}`);
+    console.log(`Mock-backed endpoints: ${ALLOW_MOCK_SERVICES ? "enabled" : "disabled"}`);
+    console.log(`WARNING: No SSL certs found. WebRTC calls will not work on LAN.`);
+  });
+}
