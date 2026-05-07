@@ -9,7 +9,8 @@ import {
   Volume2, VolumeX, Grid3x3, MoreHorizontal, VideoOff,
   ChevronRight, Reply, Forward, Copy, Download, Trash,
   FilePlus, FileIcon, FileImage, FileVideo, FileAudio, FileArchive,
-  FileSpreadsheet, FileType, ArrowDown,
+  FileSpreadsheet, FileType, ArrowDown, Pause, Play, Maximize, Minimize,
+  UserRoundPlus, StopCircle, SignalHigh,
 } from "lucide-react";
 import { cn, getAvatarColor, getInitials } from "@/lib/utils";
 import { apiRequest, fetchJson } from "@/lib/api";
@@ -650,15 +651,20 @@ function TypingIndicator({ name }: { name: string }) {
 
 // â”€â”€â”€ Voice Call Overlay â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-function VoiceCallOverlay({ callState, onUpdate, onEnd, onManageParticipants, onUnavailableAction, remoteMedia, currentUsername }: {
+function VoiceCallOverlay({ callState, onUpdate, onEnd, onScreenShare, onAddParticipant, remoteMedia, currentUsername, availableUsers }: {
   callState: CallState;
   onUpdate: (partial: Partial<CallState>) => void;
   onEnd: () => void;
-  onManageParticipants?: () => void;
-  onUnavailableAction?: (message: string) => void;
+  onScreenShare: () => void;
+  onAddParticipant: (username: string) => void;
   remoteMedia: RemoteCallMedia[];
   currentUsername: string;
+  availableUsers: TalkDirectoryUser[];
 }) {
+  const [isOnHold, setIsOnHold] = useState(false);
+  const [showAddPanel, setShowAddPanel] = useState(false);
+  const [addSearch, setAddSearch] = useState("");
+
   const joinedRemoteMedia = callState.participants
     .filter((participant) => participant.username !== currentUsername && participant.status === "joined")
     .map((participant) => {
@@ -666,6 +672,19 @@ function VoiceCallOverlay({ callState, onUpdate, onEnd, onManageParticipants, on
       return media ? { participant, media } : null;
     })
     .filter((entry): entry is { participant: CallState["participants"][number]; media: RemoteCallMedia } => !!entry);
+
+  const participantUsernames = new Set(callState.participants.map((p) => p.username));
+  const addableUsers = availableUsers.filter(
+    (u) => !participantUsernames.has(u.username) && u.username !== currentUsername
+      && (addSearch ? u.displayName.toLowerCase().includes(addSearch.toLowerCase()) : true)
+  );
+
+  const handleHold = () => {
+    const newHold = !isOnHold;
+    setIsOnHold(newHold);
+    // Mute mic and disable speaker when on hold
+    onUpdate({ isMuted: newHold, isSpeakerOn: !newHold });
+  };
 
   return (
     <div className="fixed inset-0 z-50 bg-gradient-to-b from-gray-800 to-gray-900 flex flex-col items-center justify-center text-white">
@@ -676,52 +695,146 @@ function VoiceCallOverlay({ callState, onUpdate, onEnd, onManageParticipants, on
           muted={!callState.isSpeakerOn}
         />
       ))}
+
+      {/* Hold overlay */}
+      {isOnHold && (
+        <div className="absolute inset-0 bg-black/50 z-10 flex items-center justify-center">
+          <div className="text-center">
+            <Pause size={56} className="text-yellow-400 mx-auto mb-3" />
+            <p className="text-xl font-semibold text-yellow-400">Call on Hold</p>
+            <button onClick={handleHold} className="mt-4 px-6 py-2 bg-yellow-500 hover:bg-yellow-600 text-black font-medium rounded-full transition-colors">
+              Resume
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Participant count badge */}
+      <div className="absolute top-4 right-4 bg-white/10 rounded-full px-3 py-1.5 flex items-center gap-2">
+        <Users size={14} />
+        <span className="text-sm">{callState.participants.filter((p) => p.status === "joined").length}</span>
+      </div>
+
+      {/* Duration */}
+      <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-black/40 backdrop-blur rounded-full px-4 py-1.5 text-sm font-mono">
+        {formatCallDuration(callState.duration)}
+      </div>
+
       {/* Main caller */}
-      <Avatar name={callState.conversationName} size={96} />
+      <div className="relative">
+        {callState.participants.some((p) => p.isSpeaking && p.username !== currentUsername) && (
+          <div className="absolute inset-0 -m-2 rounded-full ring-2 ring-green-400 animate-pulse" />
+        )}
+        <Avatar name={callState.conversationName} size={96} />
+      </div>
       <p className="text-xl font-semibold mt-4">{callState.conversationName}</p>
-      <p className="text-lg text-white/70 mt-1 font-mono">{formatCallDuration(callState.duration)}</p>
+      <p className="text-sm text-white/50 mt-1">
+        {callState.participants.filter((p) => p.status === "joined").length > 1
+          ? `${callState.participants.filter((p) => p.status === "joined").length} participants`
+          : "Calling..."}
+      </p>
 
       {/* Participants for group calls */}
       {callState.participants.length > 2 && (
-        <div className="flex gap-4 mt-6">
+        <div className="flex gap-4 mt-6 flex-wrap justify-center max-w-md">
           {callState.participants.map((p) => (
             <div key={p.id} className="flex flex-col items-center gap-1">
               <div className={cn("relative", p.isSpeaking && "ring-2 ring-green-400 rounded-full")}>
                 <Avatar name={p.name} size={48} />
+                {p.status === "ringing" && (
+                  <div className="absolute -bottom-1 -right-1 w-4 h-4 bg-yellow-500 rounded-full flex items-center justify-center">
+                    <Phone size={8} className="text-white" />
+                  </div>
+                )}
                 {p.isSpeaking && (
                   <div className="absolute inset-0 rounded-full ring-2 ring-green-400 animate-ping opacity-40" />
                 )}
               </div>
               <span className="text-xs text-white/70">{p.name.split(" ")[0]}</span>
+              <span className="text-[10px] text-white/40">{p.status}</span>
             </div>
           ))}
         </div>
       )}
 
       {/* Controls */}
-      <div className="flex items-center gap-4 mt-12">
-        <button
-          onClick={() => onUpdate({ isMuted: !callState.isMuted })}
-          className={cn(
-            "h-14 w-14 rounded-full flex items-center justify-center transition-colors",
-            callState.isMuted ? "bg-red-500/70 text-white" : "bg-white/10 hover:bg-white/20 text-white"
-          )}
-        >
-          {callState.isMuted ? <MicOff size={22} /> : <Mic size={22} />}
-        </button>
-        <button
-          onClick={() => onUpdate({ isSpeakerOn: !callState.isSpeakerOn })}
-          className={cn(
-            "h-14 w-14 rounded-full flex items-center justify-center transition-colors",
-            !callState.isSpeakerOn ? "bg-white/30" : "bg-white/10 hover:bg-white/20"
-          )}
-        >
-          {callState.isSpeakerOn ? <Volume2 size={22} /> : <VolumeX size={22} />}
-        </button>
+      <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-3 bg-gray-900/80 backdrop-blur rounded-2xl px-6 py-4">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              onClick={() => onUpdate({ isMuted: !callState.isMuted })}
+              className={cn(
+                "h-12 w-12 rounded-full flex items-center justify-center transition-colors",
+                callState.isMuted ? "bg-red-500/70 text-white" : "bg-white/10 hover:bg-white/20 text-white"
+              )}
+            >
+              {callState.isMuted ? <MicOff size={20} /> : <Mic size={20} />}
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>{callState.isMuted ? "Unmute" : "Mute"}</TooltipContent>
+        </Tooltip>
+
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              onClick={() => onUpdate({ isSpeakerOn: !callState.isSpeakerOn })}
+              className={cn(
+                "h-12 w-12 rounded-full flex items-center justify-center transition-colors",
+                !callState.isSpeakerOn ? "bg-white/30" : "bg-white/10 hover:bg-white/20"
+              )}
+            >
+              {callState.isSpeakerOn ? <Volume2 size={20} /> : <VolumeX size={20} />}
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>{callState.isSpeakerOn ? "Speaker off" : "Speaker on"}</TooltipContent>
+        </Tooltip>
+
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              onClick={handleHold}
+              className={cn(
+                "h-12 w-12 rounded-full flex items-center justify-center transition-colors",
+                isOnHold ? "bg-yellow-500/70 text-white" : "bg-white/10 hover:bg-white/20 text-white"
+              )}
+            >
+              {isOnHold ? <Play size={20} /> : <Pause size={20} />}
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>{isOnHold ? "Resume" : "Hold"}</TooltipContent>
+        </Tooltip>
+
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              onClick={onScreenShare}
+              className="h-12 w-12 rounded-full flex items-center justify-center bg-white/10 hover:bg-white/20 text-white transition-colors"
+            >
+              <MonitorUp size={20} />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>Share screen</TooltipContent>
+        </Tooltip>
+
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              onClick={() => setShowAddPanel(!showAddPanel)}
+              className={cn(
+                "h-12 w-12 rounded-full flex items-center justify-center transition-colors",
+                showAddPanel ? "bg-primary text-white" : "bg-white/10 hover:bg-white/20 text-white"
+              )}
+            >
+              <UserRoundPlus size={20} />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>Add participant</TooltipContent>
+        </Tooltip>
+
         <Popover>
           <PopoverTrigger asChild>
-            <button className="h-14 w-14 rounded-full flex items-center justify-center bg-white/10 hover:bg-white/20 text-white transition-colors">
-              <Grid3x3 size={22} />
+            <button className="h-12 w-12 rounded-full flex items-center justify-center bg-white/10 hover:bg-white/20 text-white transition-colors">
+              <Grid3x3 size={20} />
             </button>
           </PopoverTrigger>
           <PopoverContent className="w-[200px] p-2">
@@ -732,26 +845,44 @@ function VoiceCallOverlay({ callState, onUpdate, onEnd, onManageParticipants, on
             </div>
           </PopoverContent>
         </Popover>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button className="h-14 w-14 rounded-full flex items-center justify-center bg-white/10 hover:bg-white/20 text-white transition-colors">
-              <MoreHorizontal size={22} />
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent>
-            <DropdownMenuItem onClick={() => onManageParticipants?.()}>Add participant</DropdownMenuItem>
-            <DropdownMenuItem onClick={() => onUnavailableAction?.("Hold is not supported in this Talk integration yet.")}>Hold</DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+
+        <button
+          onClick={onEnd}
+          className="h-12 w-12 rounded-full bg-red-500 hover:bg-red-600 text-white flex items-center justify-center transition-colors ml-2"
+        >
+          <PhoneOff size={20} />
+        </button>
       </div>
 
-      {/* End call */}
-      <button
-        onClick={onEnd}
-        className="mt-8 h-16 w-16 rounded-full bg-red-500 hover:bg-red-600 text-white flex items-center justify-center transition-colors"
-      >
-        <PhoneOff size={28} />
-      </button>
+      {/* Add Participant Panel */}
+      {showAddPanel && (
+        <div className="absolute bottom-28 left-1/2 -translate-x-1/2 w-80 bg-gray-900/95 backdrop-blur border border-white/10 rounded-2xl p-4 shadow-2xl">
+          <p className="text-sm font-medium mb-2">Add participant</p>
+          <Input
+            placeholder="Search users..."
+            value={addSearch}
+            onChange={(e) => setAddSearch(e.target.value)}
+            className="mb-2 bg-white/5 border-white/10 text-white placeholder:text-white/40"
+          />
+          <div className="space-y-1 max-h-[180px] overflow-y-auto">
+            {addableUsers.length === 0 ? (
+              <p className="text-xs text-white/40 text-center py-2">No users found</p>
+            ) : addableUsers.slice(0, 8).map((u) => (
+              <button
+                key={u.username}
+                onClick={() => { onAddParticipant(u.username); setShowAddPanel(false); setAddSearch(""); }}
+                className="w-full flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-white/10 transition-colors"
+              >
+                <Avatar name={u.displayName} size={28} />
+                <div className="min-w-0 text-left">
+                  <span className="text-sm block truncate">{u.displayName}</span>
+                  <span className="text-[10px] text-white/40 block">@{u.username}</span>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -830,17 +961,23 @@ function RemoteAudioRenderer({
   return <audio ref={ref} autoPlay playsInline hidden />;
 }
 
-function VideoCallOverlay({ callState, onUpdate, onEnd, currentUserName, currentUsername, onManageParticipants, localStream, localVideoEnabled, remoteMedia }: {
+function VideoCallOverlay({ callState, onUpdate, onEnd, currentUserName, currentUsername, onAddParticipant, localStream, localVideoEnabled, remoteMedia, availableUsers }: {
   callState: CallState;
   onUpdate: (partial: Partial<CallState>) => Promise<void> | void;
   onEnd: () => void;
   currentUserName: string;
   currentUsername: string;
-  onManageParticipants: () => void;
+  onAddParticipant: (username: string) => void;
   localStream: MediaStream | null;
   localVideoEnabled: boolean;
   remoteMedia: RemoteCallMedia[];
+  availableUsers: TalkDirectoryUser[];
 }) {
+  const [isOnHold, setIsOnHold] = useState(false);
+  const [showAddPanel, setShowAddPanel] = useState(false);
+  const [addSearch, setAddSearch] = useState("");
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
   const joinedRemoteMedia = callState.participants
     .filter((participant) => participant.username !== currentUsername && participant.status === "joined")
     .map((participant) => {
@@ -857,6 +994,31 @@ function VideoCallOverlay({ callState, onUpdate, onEnd, currentUserName, current
     });
   const isDm = joinedRemoteMedia.length <= 1;
   const featuredRemote = joinedRemoteMedia[0];
+  const isSelfSharing = callState.isScreenSharing;
+
+  const participantUsernames = new Set(callState.participants.map((p) => p.username));
+  const addableUsers = availableUsers.filter(
+    (u) => !participantUsernames.has(u.username) && u.username !== currentUsername
+      && (addSearch ? u.displayName.toLowerCase().includes(addSearch.toLowerCase()) : true)
+  );
+
+  const handleHold = () => {
+    const newHold = !isOnHold;
+    setIsOnHold(newHold);
+    onUpdate({ isMuted: newHold, isSpeakerOn: !newHold });
+  };
+
+  const toggleFullscreen = () => {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen().catch(() => undefined);
+      setIsFullscreen(true);
+    } else {
+      document.exitFullscreen().catch(() => undefined);
+      setIsFullscreen(false);
+    }
+  };
+
+  const joinedCount = callState.participants.filter((p) => p.status === "joined").length;
 
   return (
     <div className="fixed inset-0 z-50 bg-gray-950 flex flex-col">
@@ -867,40 +1029,110 @@ function VideoCallOverlay({ callState, onUpdate, onEnd, currentUserName, current
           muted={!callState.isSpeakerOn}
         />
       ))}
-      {/* Duration header */}
-      <div className="absolute top-4 left-1/2 -translate-x-1/2 z-10 bg-black/40 backdrop-blur rounded-full px-4 py-1.5 text-white text-sm font-mono">
-        {formatCallDuration(callState.duration)}
+
+      {/* Hold overlay */}
+      {isOnHold && (
+        <div className="absolute inset-0 bg-black/60 z-20 flex items-center justify-center">
+          <div className="text-center">
+            <Pause size={56} className="text-yellow-400 mx-auto mb-3" />
+            <p className="text-xl font-semibold text-yellow-400">Call on Hold</p>
+            <button onClick={handleHold} className="mt-4 px-6 py-2 bg-yellow-500 hover:bg-yellow-600 text-black font-medium rounded-full transition-colors">
+              Resume
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Top bar */}
+      <div className="absolute top-4 left-0 right-0 z-10 flex items-center justify-between px-4">
+        {/* Duration */}
+        <div className="bg-black/40 backdrop-blur rounded-full px-4 py-1.5 text-white text-sm font-mono flex items-center gap-2">
+          <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+          {formatCallDuration(callState.duration)}
+        </div>
+        {/* Participant count + fullscreen */}
+        <div className="flex items-center gap-2">
+          <div className="bg-black/40 backdrop-blur rounded-full px-3 py-1.5 text-white text-sm flex items-center gap-1.5">
+            <Users size={14} />
+            <span>{joinedCount}</span>
+          </div>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button onClick={toggleFullscreen} className="bg-black/40 backdrop-blur rounded-full p-2 text-white hover:bg-black/60 transition-colors">
+                {isFullscreen ? <Minimize size={16} /> : <Maximize size={16} />}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>{isFullscreen ? "Exit fullscreen" : "Fullscreen"}</TooltipContent>
+          </Tooltip>
+        </div>
       </div>
+
+      {/* Screen share toolbar for the user who is sharing */}
+      {isSelfSharing && (
+        <div className="absolute top-16 left-1/2 -translate-x-1/2 z-10 bg-red-600/90 backdrop-blur rounded-xl px-5 py-2.5 flex items-center gap-4 shadow-lg">
+          <MonitorUp size={18} className="text-white" />
+          <span className="text-white text-sm font-medium">You are sharing your screen</span>
+          <button
+            onClick={() => onUpdate({ isScreenSharing: false })}
+            className="flex items-center gap-1.5 bg-white/20 hover:bg-white/30 text-white rounded-lg px-3 py-1.5 text-sm font-medium transition-colors"
+          >
+            <StopCircle size={14} />
+            Stop sharing
+          </button>
+        </div>
+      )}
 
       {/* Video tiles */}
       <div className="flex-1 p-4 relative">
         {callState.isScreenSharing ? (
-          /* Screen share layout */
+          /* Screen share layout: shared screen + participant thumbnails + self PIP */
           <div className="h-full flex flex-col gap-3">
-            <div className="flex-1 rounded-xl bg-gray-800 flex flex-col items-center justify-center">
+            <div className="flex-1 rounded-xl bg-gray-800 flex flex-col items-center justify-center relative overflow-hidden">
               {featuredRemote?.media.stream && featuredRemote.media.hasVideo ? (
-                <StreamRenderer stream={featuredRemote.media.stream} className="h-full w-full rounded-xl object-cover" />
+                <StreamRenderer stream={featuredRemote.media.stream} className="h-full w-full rounded-xl object-contain" />
+              ) : isSelfSharing && localStream ? (
+                <StreamRenderer stream={localStream} muted className="h-full w-full rounded-xl object-contain" />
               ) : (
                 <>
                   <MonitorUp size={64} className="text-white/30 mb-3" />
-                  <p className="text-white font-medium">{featuredRemote?.participant.name || "Participant"} is sharing their screen</p>
+                  <p className="text-white font-medium">{isSelfSharing ? "You are" : (featuredRemote?.participant.name || "Participant") + " is"} sharing screen</p>
                 </>
               )}
             </div>
+            {/* Thumbnails strip */}
             <div className="flex gap-2 justify-center">
-              {callState.participants.map((p) => (
-                <div
-                  key={p.username}
-                  className={cn(
-                    "w-24 h-[72px] rounded-lg bg-gray-800 flex flex-col items-center justify-center relative",
-                    p.isSpeaking && "ring-2 ring-green-400"
-                  )}
-                >
-                  <Avatar name={p.name} size={32} />
-                  <span className="absolute bottom-1 left-1 text-[10px] text-white bg-black/40 px-1 rounded">{p.name.split(" ")[0]}</span>
-                </div>
-              ))}
+              {callState.participants.filter((p) => p.status === "joined").map((p) => {
+                const isLocal = p.username === currentUsername;
+                const pMedia = isLocal
+                  ? { stream: isSelfSharing ? null : localStream, hasVideo: !isSelfSharing && localVideoEnabled && !callState.isVideoOff }
+                  : joinedRemoteMedia.find((item) => item.participant.username === p.username)?.media;
+                return (
+                  <div
+                    key={p.username}
+                    className={cn(
+                      "w-28 h-20 rounded-lg bg-gray-800 flex flex-col items-center justify-center relative overflow-hidden",
+                      p.isSpeaking && "ring-2 ring-green-400"
+                    )}
+                  >
+                    {pMedia?.stream && pMedia.hasVideo ? (
+                      <StreamRenderer stream={pMedia.stream} muted={isLocal} className="h-full w-full object-cover" />
+                    ) : (
+                      <Avatar name={p.name} size={32} />
+                    )}
+                    <span className="absolute bottom-1 left-1 text-[10px] text-white bg-black/40 px-1 rounded">
+                      {isLocal ? "You" : p.name.split(" ")[0]}
+                    </span>
+                  </div>
+                );
+              })}
             </div>
+            {/* Self camera PIP when sharing screen */}
+            {isSelfSharing && localVideoEnabled && !callState.isVideoOff && localStream && (
+              <div className="absolute top-20 right-6 w-[200px] h-[150px] rounded-xl bg-gray-800 overflow-hidden border border-gray-600 shadow-xl z-10">
+                <StreamRenderer stream={localStream} muted className="h-full w-full object-cover" />
+                <span className="absolute bottom-2 left-2 text-[10px] text-white bg-black/40 px-1.5 py-0.5 rounded">Your camera</span>
+              </div>
+            )}
           </div>
         ) : isDm ? (
           /* DM video: main tile + self PIP */
@@ -956,7 +1188,7 @@ function VideoCallOverlay({ callState, onUpdate, onEnd, currentUserName, current
                 )}
                 >
                   {media?.stream && media.hasVideo ? (
-                    <StreamRenderer stream={media.stream} muted className="h-full w-full object-cover" />
+                    <StreamRenderer stream={media.stream} muted={p.username === currentUsername} className="h-full w-full object-cover" />
                   ) : (
                     <>
                       {media?.stream ? (
@@ -977,44 +1209,81 @@ function VideoCallOverlay({ callState, onUpdate, onEnd, currentUserName, current
 
       {/* Control bar */}
       <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-3 bg-gray-900/80 backdrop-blur rounded-2xl px-6 py-4">
-        <button
-          onClick={() => onUpdate({ isMuted: !callState.isMuted })}
-          className={cn(
-            "h-12 w-12 rounded-full flex items-center justify-center transition-colors",
-            callState.isMuted ? "bg-red-500/70 text-white" : "bg-white/10 hover:bg-white/20 text-white"
-          )}
-        >
-          {callState.isMuted ? <MicOff size={20} /> : <Mic size={20} />}
-        </button>
-        <button
-          onClick={() => onUpdate({ isVideoOff: !callState.isVideoOff })}
-          className={cn(
-            "h-12 w-12 rounded-full flex items-center justify-center transition-colors",
-            callState.isVideoOff ? "bg-red-500/70 text-white" : "bg-white/10 hover:bg-white/20 text-white"
-          )}
-        >
-          {callState.isVideoOff ? <VideoOff size={20} /> : <Video size={20} />}
-        </button>
-        <button
-          onClick={() => onUpdate({ isScreenSharing: !callState.isScreenSharing })}
-          className={cn(
-            "h-12 w-12 rounded-full flex items-center justify-center transition-colors",
-            callState.isScreenSharing ? "bg-green-600/80 text-white" : "bg-white/10 hover:bg-white/20 text-white"
-          )}
-        >
-          <MonitorUp size={20} />
-        </button>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button aria-label="Call options" className="h-12 w-12 rounded-full flex items-center justify-center bg-white/10 hover:bg-white/20 text-white transition-colors">
-              <MoreHorizontal size={20} />
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              onClick={() => onUpdate({ isMuted: !callState.isMuted })}
+              className={cn(
+                "h-12 w-12 rounded-full flex items-center justify-center transition-colors",
+                callState.isMuted ? "bg-red-500/70 text-white" : "bg-white/10 hover:bg-white/20 text-white"
+              )}
+            >
+              {callState.isMuted ? <MicOff size={20} /> : <Mic size={20} />}
             </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent>
-            <DropdownMenuItem onClick={onManageParticipants}>Add participant</DropdownMenuItem>
-            <DropdownMenuItem>Hold</DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+          </TooltipTrigger>
+          <TooltipContent>{callState.isMuted ? "Unmute" : "Mute"}</TooltipContent>
+        </Tooltip>
+
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              onClick={() => onUpdate({ isVideoOff: !callState.isVideoOff })}
+              className={cn(
+                "h-12 w-12 rounded-full flex items-center justify-center transition-colors",
+                callState.isVideoOff ? "bg-red-500/70 text-white" : "bg-white/10 hover:bg-white/20 text-white"
+              )}
+            >
+              {callState.isVideoOff ? <VideoOff size={20} /> : <Video size={20} />}
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>{callState.isVideoOff ? "Camera on" : "Camera off"}</TooltipContent>
+        </Tooltip>
+
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              onClick={() => onUpdate({ isScreenSharing: !callState.isScreenSharing })}
+              className={cn(
+                "h-12 w-12 rounded-full flex items-center justify-center transition-colors",
+                callState.isScreenSharing ? "bg-green-600/80 text-white" : "bg-white/10 hover:bg-white/20 text-white"
+              )}
+            >
+              <MonitorUp size={20} />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>{callState.isScreenSharing ? "Stop sharing" : "Share screen"}</TooltipContent>
+        </Tooltip>
+
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              onClick={handleHold}
+              className={cn(
+                "h-12 w-12 rounded-full flex items-center justify-center transition-colors",
+                isOnHold ? "bg-yellow-500/70 text-white" : "bg-white/10 hover:bg-white/20 text-white"
+              )}
+            >
+              {isOnHold ? <Play size={20} /> : <Pause size={20} />}
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>{isOnHold ? "Resume" : "Hold"}</TooltipContent>
+        </Tooltip>
+
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              onClick={() => setShowAddPanel(!showAddPanel)}
+              className={cn(
+                "h-12 w-12 rounded-full flex items-center justify-center transition-colors",
+                showAddPanel ? "bg-primary text-white" : "bg-white/10 hover:bg-white/20 text-white"
+              )}
+            >
+              <UserRoundPlus size={20} />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>Add participant</TooltipContent>
+        </Tooltip>
+
         <button
           onClick={onEnd}
           className="h-12 w-12 rounded-full bg-red-500 hover:bg-red-600 text-white flex items-center justify-center transition-colors ml-2"
@@ -1022,6 +1291,36 @@ function VideoCallOverlay({ callState, onUpdate, onEnd, currentUserName, current
           <PhoneOff size={20} />
         </button>
       </div>
+
+      {/* Add Participant Panel */}
+      {showAddPanel && (
+        <div className="absolute bottom-28 left-1/2 -translate-x-1/2 w-80 bg-gray-900/95 backdrop-blur border border-white/10 rounded-2xl p-4 shadow-2xl z-20">
+          <p className="text-sm font-medium text-white mb-2">Add participant</p>
+          <Input
+            placeholder="Search users..."
+            value={addSearch}
+            onChange={(e) => setAddSearch(e.target.value)}
+            className="mb-2 bg-white/5 border-white/10 text-white placeholder:text-white/40"
+          />
+          <div className="space-y-1 max-h-[180px] overflow-y-auto">
+            {addableUsers.length === 0 ? (
+              <p className="text-xs text-white/40 text-center py-2">No users found</p>
+            ) : addableUsers.slice(0, 8).map((u) => (
+              <button
+                key={u.username}
+                onClick={() => { onAddParticipant(u.username); setShowAddPanel(false); setAddSearch(""); }}
+                className="w-full flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-white/10 transition-colors text-white"
+              >
+                <Avatar name={u.displayName} size={28} />
+                <div className="min-w-0 text-left">
+                  <span className="text-sm block truncate">{u.displayName}</span>
+                  <span className="text-[10px] text-white/40 block">@{u.username}</span>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1037,29 +1336,59 @@ function IncomingCallBanner({ callerName, type, onAccept, onDecline }: {
   const isVoiceCall = type === "voice";
   const isScreenShare = type === "screen";
   const CallIcon = isVoiceCall ? Phone : isScreenShare ? MonitorUp : Video;
-  const callLabel = isVoiceCall ? "voice" : isScreenShare ? "screen-share" : "video";
+  const callLabel = isVoiceCall ? "Voice call" : isScreenShare ? "Screen share" : "Video call";
 
   return (
-    <div className="fixed top-4 right-4 z-50 bg-card border shadow-2xl rounded-2xl p-4 animate-fade-in w-80">
-      <div className="flex items-center gap-3 mb-3">
-        <div className="relative">
-          <Avatar name={callerName} size={48} />
-          <div className="absolute -bottom-1 -right-1 w-5 h-5 bg-green-500 rounded-full flex items-center justify-center">
-              <CallIcon size={10} className="text-white" />
-          </div>
-        </div>
-        <div>
-          <p className="font-semibold text-sm">{callerName}</p>
-          <p className="text-xs text-muted-foreground">Incoming {callLabel} call...</p>
+    <div className="fixed inset-0 z-[60] bg-gradient-to-b from-gray-900 via-gray-900 to-gray-950 flex flex-col items-center justify-center text-white">
+      {/* Animated pulse rings */}
+      <div className="relative mb-6">
+        <div className="absolute inset-0 -m-6 rounded-full bg-green-500/10 animate-ping" style={{ animationDuration: "2s" }} />
+        <div className="absolute inset-0 -m-3 rounded-full bg-green-500/15 animate-pulse" style={{ animationDuration: "1.5s" }} />
+        <Avatar name={callerName} size={120} />
+        <div className="absolute -bottom-2 -right-2 w-10 h-10 bg-green-500 rounded-full flex items-center justify-center shadow-lg shadow-green-500/30">
+          <CallIcon size={20} className="text-white" />
         </div>
       </div>
-      <div className="flex gap-2">
-        <Button className="flex-1 bg-red-500 hover:bg-red-600 text-white" size="sm" onClick={onDecline}>
-          <PhoneOff size={14} className="mr-1" /> Decline
-        </Button>
-        <Button className="flex-1 bg-green-500 hover:bg-green-600 text-white" size="sm" onClick={onAccept}>
-          <CallIcon size={14} className="mr-1" /> Accept
-        </Button>
+
+      {/* Caller info */}
+      <p className="text-2xl font-bold mt-2">{callerName}</p>
+      <p className="text-base text-white/60 mt-1">{callLabel}</p>
+
+      {/* Ringing indicator */}
+      <div className="flex items-center gap-2 mt-4">
+        <div className="flex gap-1">
+          {[0, 1, 2].map((i) => (
+            <div
+              key={i}
+              className="w-2 h-2 bg-green-400 rounded-full animate-bounce"
+              style={{ animationDelay: `${i * 0.2}s` }}
+            />
+          ))}
+        </div>
+        <span className="text-sm text-white/50">Ringing...</span>
+      </div>
+
+      {/* Action buttons */}
+      <div className="flex items-center gap-12 mt-16">
+        <div className="flex flex-col items-center gap-2">
+          <button
+            onClick={onDecline}
+            className="h-16 w-16 rounded-full bg-red-500 hover:bg-red-600 text-white flex items-center justify-center transition-all hover:scale-105 shadow-lg shadow-red-500/30"
+          >
+            <PhoneOff size={28} />
+          </button>
+          <span className="text-xs text-white/60">Decline</span>
+        </div>
+        <div className="flex flex-col items-center gap-2">
+          <button
+            onClick={onAccept}
+            className="h-16 w-16 rounded-full bg-green-500 hover:bg-green-600 text-white flex items-center justify-center transition-all hover:scale-105 shadow-lg shadow-green-500/30 animate-pulse"
+            style={{ animationDuration: "2s" }}
+          >
+            <CallIcon size={28} />
+          </button>
+          <span className="text-xs text-white/60">Accept</span>
+        </div>
       </div>
     </div>
   );
@@ -2273,10 +2602,6 @@ export default function Talk() {
     typingTimeoutRef.current = setTimeout(() => setIsTyping(false), 3000);
   };
 
-  const handleUnavailableAction = useCallback((message: string) => {
-    showToast(message);
-  }, [showToast]);
-
   const handleReply = useCallback((msg: Message) => {
     setReplyTo(msg);
     textareaRef.current?.focus();
@@ -2317,6 +2642,31 @@ export default function Talk() {
       }
     );
   }, [activeConversationId, queryClient]);
+
+  const handleAddCallParticipant = useCallback(async (username: string) => {
+    if (!activeConversationId) return;
+    try {
+      await fetchJson(`/api/conversations/${activeConversationId}/participants`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username }),
+      });
+      showToast(`Invited ${username} to the call`);
+    } catch {
+      showToast("Failed to add participant");
+    }
+  }, [activeConversationId, showToast]);
+
+  const handleVoiceScreenShare = useCallback(async () => {
+    if (!callState) return;
+    try {
+      await updateCall({ isScreenSharing: true });
+      // Switch to video/screen overlay
+      setCallState((prev) => prev ? { ...prev, type: "screen" } : prev);
+    } catch {
+      showToast("Unable to start screen sharing");
+    }
+  }, [callState, showToast]);
 
   const handleMuteToggle = () => {
     if (!activeConversation) return;
@@ -2457,10 +2807,11 @@ export default function Talk() {
             callState={callState}
             onUpdate={updateCall}
             onEnd={endCall}
-            onManageParticipants={() => setShowInfoPanel(true)}
-            onUnavailableAction={handleUnavailableAction}
+            onScreenShare={handleVoiceScreenShare}
+            onAddParticipant={handleAddCallParticipant}
             remoteMedia={remoteMedia}
             currentUsername={currentUsername}
+            availableUsers={availableUsers}
           />
         )}
       {callState?.active && (callState.type === "video" || callState.type === "screen") && (
@@ -2470,10 +2821,11 @@ export default function Talk() {
           onEnd={endCall}
           currentUserName={currentUserName}
           currentUsername={currentUsername}
-          onManageParticipants={() => setShowInfoPanel(true)}
+          onAddParticipant={handleAddCallParticipant}
           localStream={localStreamRef.current}
           localVideoEnabled={localVideoEnabled}
           remoteMedia={remoteMedia}
+          availableUsers={availableUsers}
         />
       )}
 
