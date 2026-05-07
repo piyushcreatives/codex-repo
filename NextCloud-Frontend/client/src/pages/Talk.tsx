@@ -273,13 +273,23 @@ function Avatar({ name, size = 38, isGroup = false }: { name: string; size?: num
   );
 }
 
-function OnlineDot({ size = 8, className }: { size?: number; className?: string }) {
+function OnlineDot({ size = 8, className, isOnline = true }: { size?: number; className?: string; isOnline?: boolean }) {
   return (
     <div
-      className={cn("rounded-full bg-green-500 border-2 border-background", className)}
+      className={cn(
+        "rounded-full border-2 border-background",
+        isOnline ? "bg-green-500" : "bg-gray-400",
+        className
+      )}
       style={{ width: size, height: size }}
     />
   );
+}
+
+function isRecentlyActive(dateStr: string | null | undefined, thresholdMinutes = 5): boolean {
+  if (!dateStr) return false;
+  const diff = Date.now() - new Date(dateStr).getTime();
+  return diff < thresholdMinutes * 60 * 1000;
 }
 
 // â"€â"€â"€ Conversation List Item â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
@@ -304,7 +314,7 @@ function ConversationRow({
       <div className="relative">
         <Avatar name={c.name} size={38} isGroup={c.type === "group"} />
         {c.type === "dm" && (
-          <OnlineDot size={8} className="absolute bottom-0 right-0" />
+          <OnlineDot size={8} className="absolute bottom-0 right-0" isOnline={isRecentlyActive(c.lastMessageAt)} />
         )}
       </div>
       <div className="flex-1 min-w-0">
@@ -649,7 +659,219 @@ function TypingIndicator({ name }: { name: string }) {
   );
 }
 
-// â"€â"€â"€ Voice Call Overlay â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+// ——— Teams-Style Shared Call Toolbar ———————————————————————
+
+function TeamsCallToolbar({
+  isMuted,
+  isVideoOff,
+  isScreenSharing,
+  showPeoplePanel,
+  onToggleMute,
+  onToggleVideo,
+  onToggleScreenShare,
+  onTogglePeople,
+  onLeave,
+  showVideoToggle = true,
+}: {
+  isMuted: boolean;
+  isVideoOff: boolean;
+  isScreenSharing: boolean;
+  showPeoplePanel: boolean;
+  onToggleMute: () => void;
+  onToggleVideo: () => void;
+  onToggleScreenShare: () => void;
+  onTogglePeople: () => void;
+  onLeave: () => void;
+  showVideoToggle?: boolean;
+}) {
+  return (
+    <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-20 flex items-center gap-1 bg-[#292929] rounded-xl px-3 py-2 shadow-2xl">
+      {/* Camera */}
+      {showVideoToggle && (
+        <button
+          onClick={onToggleVideo}
+          className={cn(
+            "flex flex-col items-center gap-0.5 px-3 py-2 rounded-lg transition-colors min-w-[56px]",
+            isVideoOff ? "bg-[#d13438] text-white" : "hover:bg-white/10 text-white"
+          )}
+        >
+          {isVideoOff ? <VideoOff size={20} /> : <Video size={20} />}
+          <span className="text-[10px]">Camera</span>
+        </button>
+      )}
+
+      {/* Mic */}
+      <button
+        onClick={onToggleMute}
+        className={cn(
+          "flex flex-col items-center gap-0.5 px-3 py-2 rounded-lg transition-colors min-w-[56px]",
+          isMuted ? "bg-[#d13438] text-white" : "hover:bg-white/10 text-white"
+        )}
+      >
+        {isMuted ? <MicOff size={20} /> : <Mic size={20} />}
+        <span className="text-[10px]">{isMuted ? "Unmute" : "Mute"}</span>
+      </button>
+
+      {/* Share */}
+      <button
+        onClick={onToggleScreenShare}
+        className={cn(
+          "flex flex-col items-center gap-0.5 px-3 py-2 rounded-lg transition-colors min-w-[56px]",
+          isScreenSharing ? "bg-[#5b5fc7] text-white" : "hover:bg-white/10 text-white"
+        )}
+      >
+        <MonitorUp size={20} />
+        <span className="text-[10px]">Share</span>
+      </button>
+
+      {/* People */}
+      <button
+        onClick={onTogglePeople}
+        className={cn(
+          "flex flex-col items-center gap-0.5 px-3 py-2 rounded-lg transition-colors min-w-[56px]",
+          showPeoplePanel ? "bg-white/20 text-white" : "hover:bg-white/10 text-white"
+        )}
+      >
+        <Users size={20} />
+        <span className="text-[10px]">People</span>
+      </button>
+
+      {/* More */}
+      <Popover>
+        <PopoverTrigger asChild>
+          <button className="flex flex-col items-center gap-0.5 px-3 py-2 rounded-lg hover:bg-white/10 text-white transition-colors min-w-[56px]">
+            <MoreHorizontal size={20} />
+            <span className="text-[10px]">More</span>
+          </button>
+        </PopoverTrigger>
+        <PopoverContent className="w-[200px] p-2 bg-[#292929] border-white/10 text-white" side="top" align="center">
+          <div className="space-y-1">
+            <button className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-white/10 text-sm transition-colors">
+              <Grid3x3 size={16} /> Dial pad
+            </button>
+            <button className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-white/10 text-sm transition-colors">
+              <Volume2 size={16} /> Device settings
+            </button>
+            <button className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-white/10 text-sm transition-colors">
+              <Maximize size={16} /> Full screen
+            </button>
+          </div>
+        </PopoverContent>
+      </Popover>
+
+      {/* Divider */}
+      <div className="w-px h-8 bg-white/20 mx-1" />
+
+      {/* Leave */}
+      <button
+        onClick={onLeave}
+        className="flex flex-col items-center gap-0.5 px-4 py-2 rounded-lg bg-[#d13438] hover:bg-[#bc2f32] text-white transition-colors min-w-[56px]"
+      >
+        <PhoneOff size={20} />
+        <span className="text-[10px]">Leave</span>
+      </button>
+    </div>
+  );
+}
+
+// ——— Teams People Side Panel ———————————————————————————
+
+function TeamsPeoplePanel({
+  participants,
+  currentUsername,
+  availableUsers,
+  onAddParticipant,
+  onClose,
+}: {
+  participants: CallState["participants"];
+  currentUsername: string;
+  availableUsers: TalkDirectoryUser[];
+  onAddParticipant: (username: string) => void;
+  onClose: () => void;
+}) {
+  const [search, setSearch] = useState("");
+
+  const participantUsernames = new Set(participants.map((p) => p.username));
+  const addableUsers = availableUsers.filter(
+    (u) => !participantUsernames.has(u.username) && u.username !== currentUsername
+      && (search ? u.displayName.toLowerCase().includes(search.toLowerCase()) : true)
+  );
+
+  return (
+    <div className="absolute top-0 right-0 bottom-0 w-80 bg-[#292929] border-l border-white/10 z-20 flex flex-col text-white">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
+        <span className="font-semibold text-sm">People</span>
+        <button onClick={onClose} className="p-1 rounded hover:bg-white/10 transition-colors">
+          <X size={16} />
+        </button>
+      </div>
+      <div className="px-3 py-2">
+        <Input
+          placeholder="Invite someone"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="bg-white/5 border-white/10 text-white text-sm placeholder:text-white/40 h-8"
+        />
+      </div>
+      {/* In this call */}
+      <div className="px-3 py-1">
+        <p className="text-[11px] text-white/50 font-medium uppercase tracking-wide mb-1">In this call ({participants.filter((p) => p.status === "joined").length})</p>
+        <div className="space-y-0.5">
+          {participants.filter((p) => p.status === "joined").map((p) => (
+            <div key={p.id} className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-white/5">
+              <div className="relative">
+                <Avatar name={p.name} size={28} />
+                {p.isSpeaking && (
+                  <div className="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-[#5b5fc7] rounded-full border border-[#292929]" />
+                )}
+              </div>
+              <span className="text-sm truncate flex-1">{p.username === currentUsername ? `${p.name} (You)` : p.name}</span>
+              {p.isMuted && <MicOff size={12} className="text-white/40" />}
+            </div>
+          ))}
+        </div>
+      </div>
+      {/* Ringing */}
+      {participants.some((p) => p.status === "ringing") && (
+        <div className="px-3 py-1">
+          <p className="text-[11px] text-white/50 font-medium uppercase tracking-wide mb-1">Ringing</p>
+          <div className="space-y-0.5">
+            {participants.filter((p) => p.status === "ringing").map((p) => (
+              <div key={p.id} className="flex items-center gap-2 px-2 py-1.5 rounded-lg">
+                <Avatar name={p.name} size={28} />
+                <span className="text-sm truncate flex-1 text-white/60">{p.name}</span>
+                <span className="text-[10px] text-yellow-400">Ringing...</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {/* Invite */}
+      {search && addableUsers.length > 0 && (
+        <div className="px-3 py-1 border-t border-white/10 mt-1">
+          <p className="text-[11px] text-white/50 font-medium uppercase tracking-wide mb-1">Invite</p>
+          <div className="space-y-0.5 max-h-[200px] overflow-y-auto">
+            {addableUsers.slice(0, 8).map((u) => (
+              <button
+                key={u.username}
+                onClick={() => onAddParticipant(u.username)}
+                className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-white/10 transition-colors"
+              >
+                <Avatar name={u.displayName} size={28} />
+                <div className="min-w-0 text-left flex-1">
+                  <span className="text-sm block truncate">{u.displayName}</span>
+                </div>
+                <UserPlus size={14} className="text-white/40" />
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ——— Voice Call Overlay (Teams Style) ————————————————————
 
 function VoiceCallOverlay({ callState, onUpdate, onEnd, onScreenShare, onAddParticipant, remoteMedia, currentUsername, availableUsers }: {
   callState: CallState;
@@ -661,9 +883,7 @@ function VoiceCallOverlay({ callState, onUpdate, onEnd, onScreenShare, onAddPart
   currentUsername: string;
   availableUsers: TalkDirectoryUser[];
 }) {
-  const [isOnHold, setIsOnHold] = useState(false);
-  const [showAddPanel, setShowAddPanel] = useState(false);
-  const [addSearch, setAddSearch] = useState("");
+  const [showPeoplePanel, setShowPeoplePanel] = useState(false);
 
   const joinedRemoteMedia = callState.participants
     .filter((participant) => participant.username !== currentUsername && participant.status === "joined")
@@ -673,215 +893,85 @@ function VoiceCallOverlay({ callState, onUpdate, onEnd, onScreenShare, onAddPart
     })
     .filter((entry): entry is { participant: CallState["participants"][number]; media: RemoteCallMedia } => !!entry);
 
-  const participantUsernames = new Set(callState.participants.map((p) => p.username));
-  const addableUsers = availableUsers.filter(
-    (u) => !participantUsernames.has(u.username) && u.username !== currentUsername
-      && (addSearch ? u.displayName.toLowerCase().includes(addSearch.toLowerCase()) : true)
-  );
-
-  const handleHold = () => {
-    const newHold = !isOnHold;
-    setIsOnHold(newHold);
-    // Mute mic and disable speaker when on hold
-    onUpdate({ isMuted: newHold, isSpeakerOn: !newHold });
-  };
+  const joinedCount = callState.participants.filter((p) => p.status === "joined").length;
 
   return (
-    <div className="fixed inset-0 z-50 bg-gradient-to-b from-gray-800 to-gray-900 flex flex-col items-center justify-center text-white">
+    <div className="fixed inset-0 z-50 bg-[#1f1f1f] flex flex-col text-white">
+      {/* Audio renderers */}
       {joinedRemoteMedia.map(({ media }) => (
-        <RemoteAudioRenderer
-          key={media.username}
-          stream={media.stream}
-          muted={!callState.isSpeakerOn}
-        />
+        <RemoteAudioRenderer key={media.username} stream={media.stream} muted={!callState.isSpeakerOn} />
       ))}
 
-      {/* Hold overlay */}
-      {isOnHold && (
-        <div className="absolute inset-0 bg-black/50 z-10 flex items-center justify-center">
-          <div className="text-center">
-            <Pause size={56} className="text-yellow-400 mx-auto mb-3" />
-            <p className="text-xl font-semibold text-yellow-400">Call on Hold</p>
-            <button onClick={handleHold} className="mt-4 px-6 py-2 bg-yellow-500 hover:bg-yellow-600 text-black font-medium rounded-full transition-colors">
-              Resume
-            </button>
+      {/* Top bar */}
+      <div className="flex items-center justify-between px-5 py-3">
+        <div className="flex items-center gap-3">
+          <span className="font-semibold text-sm">{callState.conversationName}</span>
+          <div className="flex items-center gap-1.5 text-white/50 text-xs">
+            <div className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
+            {formatCallDuration(callState.duration)}
           </div>
         </div>
-      )}
-
-      {/* Participant count badge */}
-      <div className="absolute top-4 right-4 bg-white/10 rounded-full px-3 py-1.5 flex items-center gap-2">
-        <Users size={14} />
-        <span className="text-sm">{callState.participants.filter((p) => p.status === "joined").length}</span>
+        <div className="text-white/40 text-xs">
+          {joinedCount > 1 ? `${joinedCount} participants` : "Calling..."}
+        </div>
       </div>
 
-      {/* Duration */}
-      <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-black/40 backdrop-blur rounded-full px-4 py-1.5 text-sm font-mono">
-        {formatCallDuration(callState.duration)}
-      </div>
-
-      {/* Main caller */}
-      <div className="relative">
-        {callState.participants.some((p) => p.isSpeaking && p.username !== currentUsername) && (
-          <div className="absolute inset-0 -m-2 rounded-full ring-2 ring-green-400 animate-pulse" />
-        )}
-        <Avatar name={callState.conversationName} size={96} />
-      </div>
-      <p className="text-xl font-semibold mt-4">{callState.conversationName}</p>
-      <p className="text-sm text-white/50 mt-1">
-        {callState.participants.filter((p) => p.status === "joined").length > 1
-          ? `${callState.participants.filter((p) => p.status === "joined").length} participants`
-          : "Calling..."}
-      </p>
-
-      {/* Participants for group calls */}
-      {callState.participants.length > 2 && (
-        <div className="flex gap-4 mt-6 flex-wrap justify-center max-w-md">
+      {/* Center: Avatar grid */}
+      <div className="flex-1 flex items-center justify-center">
+        <div className={cn(
+          "grid gap-6 p-8",
+          callState.participants.length <= 2 ? "grid-cols-1" : callState.participants.length <= 4 ? "grid-cols-2" : "grid-cols-3"
+        )}>
           {callState.participants.map((p) => (
-            <div key={p.id} className="flex flex-col items-center gap-1">
-              <div className={cn("relative", p.isSpeaking && "ring-2 ring-green-400 rounded-full")}>
-                <Avatar name={p.name} size={48} />
+            <div key={p.id} className="flex flex-col items-center gap-3">
+              <div className={cn(
+                "relative rounded-full p-1",
+                p.isSpeaking && "ring-2 ring-[#5b5fc7] ring-offset-2 ring-offset-[#1f1f1f]"
+              )}>
+                <Avatar name={p.name} size={callState.participants.length <= 2 ? 96 : 72} />
                 {p.status === "ringing" && (
-                  <div className="absolute -bottom-1 -right-1 w-4 h-4 bg-yellow-500 rounded-full flex items-center justify-center">
-                    <Phone size={8} className="text-white" />
+                  <div className="absolute bottom-0 right-0 w-5 h-5 bg-yellow-500 rounded-full flex items-center justify-center border-2 border-[#1f1f1f]">
+                    <Phone size={10} className="text-white" />
                   </div>
                 )}
-                {p.isSpeaking && (
-                  <div className="absolute inset-0 rounded-full ring-2 ring-green-400 animate-ping opacity-40" />
+                {p.isMuted && p.status === "joined" && (
+                  <div className="absolute bottom-0 right-0 w-5 h-5 bg-[#d13438] rounded-full flex items-center justify-center border-2 border-[#1f1f1f]">
+                    <MicOff size={10} className="text-white" />
+                  </div>
                 )}
               </div>
-              <span className="text-xs text-white/70">{p.name.split(" ")[0]}</span>
-              <span className="text-[10px] text-white/40">{p.status}</span>
+              <div className="text-center">
+                <p className="text-sm font-medium">{p.username === currentUsername ? `${p.name} (You)` : p.name}</p>
+                {p.status === "ringing" && <p className="text-[11px] text-white/40">Ringing...</p>}
+              </div>
             </div>
           ))}
         </div>
-      )}
-
-      {/* Controls */}
-      <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-3 bg-gray-900/80 backdrop-blur rounded-2xl px-6 py-4">
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              onClick={() => onUpdate({ isMuted: !callState.isMuted })}
-              className={cn(
-                "h-12 w-12 rounded-full flex items-center justify-center transition-colors",
-                callState.isMuted ? "bg-red-500/70 text-white" : "bg-white/10 hover:bg-white/20 text-white"
-              )}
-            >
-              {callState.isMuted ? <MicOff size={20} /> : <Mic size={20} />}
-            </button>
-          </TooltipTrigger>
-          <TooltipContent>{callState.isMuted ? "Unmute" : "Mute"}</TooltipContent>
-        </Tooltip>
-
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              onClick={() => onUpdate({ isSpeakerOn: !callState.isSpeakerOn })}
-              className={cn(
-                "h-12 w-12 rounded-full flex items-center justify-center transition-colors",
-                !callState.isSpeakerOn ? "bg-white/30" : "bg-white/10 hover:bg-white/20"
-              )}
-            >
-              {callState.isSpeakerOn ? <Volume2 size={20} /> : <VolumeX size={20} />}
-            </button>
-          </TooltipTrigger>
-          <TooltipContent>{callState.isSpeakerOn ? "Speaker off" : "Speaker on"}</TooltipContent>
-        </Tooltip>
-
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              onClick={handleHold}
-              className={cn(
-                "h-12 w-12 rounded-full flex items-center justify-center transition-colors",
-                isOnHold ? "bg-yellow-500/70 text-white" : "bg-white/10 hover:bg-white/20 text-white"
-              )}
-            >
-              {isOnHold ? <Play size={20} /> : <Pause size={20} />}
-            </button>
-          </TooltipTrigger>
-          <TooltipContent>{isOnHold ? "Resume" : "Hold"}</TooltipContent>
-        </Tooltip>
-
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              onClick={onScreenShare}
-              className="h-12 w-12 rounded-full flex items-center justify-center bg-white/10 hover:bg-white/20 text-white transition-colors"
-            >
-              <MonitorUp size={20} />
-            </button>
-          </TooltipTrigger>
-          <TooltipContent>Share screen</TooltipContent>
-        </Tooltip>
-
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              onClick={() => setShowAddPanel(!showAddPanel)}
-              className={cn(
-                "h-12 w-12 rounded-full flex items-center justify-center transition-colors",
-                showAddPanel ? "bg-primary text-white" : "bg-white/10 hover:bg-white/20 text-white"
-              )}
-            >
-              <UserRoundPlus size={20} />
-            </button>
-          </TooltipTrigger>
-          <TooltipContent>Add participant</TooltipContent>
-        </Tooltip>
-
-        <Popover>
-          <PopoverTrigger asChild>
-            <button className="h-12 w-12 rounded-full flex items-center justify-center bg-white/10 hover:bg-white/20 text-white transition-colors">
-              <Grid3x3 size={20} />
-            </button>
-          </PopoverTrigger>
-          <PopoverContent className="w-[200px] p-2">
-            <div className="grid grid-cols-3 gap-1">
-              {["1","2","3","4","5","6","7","8","9","*","0","#"].map((k) => (
-                <button key={k} className="h-10 rounded-lg bg-muted hover:bg-accent text-sm font-medium">{k}</button>
-              ))}
-            </div>
-          </PopoverContent>
-        </Popover>
-
-        <button
-          onClick={onEnd}
-          className="h-12 w-12 rounded-full bg-red-500 hover:bg-red-600 text-white flex items-center justify-center transition-colors ml-2"
-        >
-          <PhoneOff size={20} />
-        </button>
       </div>
 
-      {/* Add Participant Panel */}
-      {showAddPanel && (
-        <div className="absolute bottom-28 left-1/2 -translate-x-1/2 w-80 bg-gray-900/95 backdrop-blur border border-white/10 rounded-2xl p-4 shadow-2xl">
-          <p className="text-sm font-medium mb-2">Add participant</p>
-          <Input
-            placeholder="Search users..."
-            value={addSearch}
-            onChange={(e) => setAddSearch(e.target.value)}
-            className="mb-2 bg-white/5 border-white/10 text-white placeholder:text-white/40"
-          />
-          <div className="space-y-1 max-h-[180px] overflow-y-auto">
-            {addableUsers.length === 0 ? (
-              <p className="text-xs text-white/40 text-center py-2">No users found</p>
-            ) : addableUsers.slice(0, 8).map((u) => (
-              <button
-                key={u.username}
-                onClick={() => { onAddParticipant(u.username); setShowAddPanel(false); setAddSearch(""); }}
-                className="w-full flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-white/10 transition-colors"
-              >
-                <Avatar name={u.displayName} size={28} />
-                <div className="min-w-0 text-left">
-                  <span className="text-sm block truncate">{u.displayName}</span>
-                  <span className="text-[10px] text-white/40 block">@{u.username}</span>
-                </div>
-              </button>
-            ))}
-          </div>
-        </div>
+      {/* Teams toolbar */}
+      <TeamsCallToolbar
+        isMuted={callState.isMuted}
+        isVideoOff={true}
+        isScreenSharing={false}
+        showPeoplePanel={showPeoplePanel}
+        onToggleMute={() => onUpdate({ isMuted: !callState.isMuted })}
+        onToggleVideo={() => onUpdate({ isVideoOff: false })}
+        onToggleScreenShare={onScreenShare}
+        onTogglePeople={() => setShowPeoplePanel(!showPeoplePanel)}
+        onLeave={onEnd}
+        showVideoToggle={true}
+      />
+
+      {/* People panel */}
+      {showPeoplePanel && (
+        <TeamsPeoplePanel
+          participants={callState.participants}
+          currentUsername={currentUsername}
+          availableUsers={availableUsers}
+          onAddParticipant={onAddParticipant}
+          onClose={() => setShowPeoplePanel(false)}
+        />
       )}
     </div>
   );
@@ -973,10 +1063,7 @@ function VideoCallOverlay({ callState, onUpdate, onEnd, currentUserName, current
   remoteMedia: RemoteCallMedia[];
   availableUsers: TalkDirectoryUser[];
 }) {
-  const [isOnHold, setIsOnHold] = useState(false);
-  const [showAddPanel, setShowAddPanel] = useState(false);
-  const [addSearch, setAddSearch] = useState("");
-  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [showPeoplePanel, setShowPeoplePanel] = useState(false);
 
   const joinedRemoteMedia = callState.participants
     .filter((participant) => participant.username !== currentUsername && participant.status === "joined")
@@ -996,111 +1083,58 @@ function VideoCallOverlay({ callState, onUpdate, onEnd, currentUserName, current
   const featuredRemote = joinedRemoteMedia[0];
   const isSelfSharing = callState.isScreenSharing;
 
-  const participantUsernames = new Set(callState.participants.map((p) => p.username));
-  const addableUsers = availableUsers.filter(
-    (u) => !participantUsernames.has(u.username) && u.username !== currentUsername
-      && (addSearch ? u.displayName.toLowerCase().includes(addSearch.toLowerCase()) : true)
-  );
-
-  const handleHold = () => {
-    const newHold = !isOnHold;
-    setIsOnHold(newHold);
-    onUpdate({ isMuted: newHold, isSpeakerOn: !newHold });
-  };
-
-  const toggleFullscreen = () => {
-    if (!document.fullscreenElement) {
-      document.documentElement.requestFullscreen().catch(() => undefined);
-      setIsFullscreen(true);
-    } else {
-      document.exitFullscreen().catch(() => undefined);
-      setIsFullscreen(false);
-    }
-  };
-
-  const joinedCount = callState.participants.filter((p) => p.status === "joined").length;
-
   return (
-    <div className="fixed inset-0 z-50 bg-gray-950 flex flex-col">
+    <div className="fixed inset-0 z-50 bg-[#1f1f1f] flex flex-col text-white">
+      {/* Audio renderers */}
       {joinedRemoteMedia.map(({ media }) => (
-        <RemoteAudioRenderer
-          key={media.username}
-          stream={media.stream}
-          muted={!callState.isSpeakerOn}
-        />
+        <RemoteAudioRenderer key={media.username} stream={media.stream} muted={!callState.isSpeakerOn} />
       ))}
 
-      {/* Hold overlay */}
-      {isOnHold && (
-        <div className="absolute inset-0 bg-black/60 z-20 flex items-center justify-center">
-          <div className="text-center">
-            <Pause size={56} className="text-yellow-400 mx-auto mb-3" />
-            <p className="text-xl font-semibold text-yellow-400">Call on Hold</p>
-            <button onClick={handleHold} className="mt-4 px-6 py-2 bg-yellow-500 hover:bg-yellow-600 text-black font-medium rounded-full transition-colors">
-              Resume
-            </button>
-          </div>
-        </div>
-      )}
-
       {/* Top bar */}
-      <div className="absolute top-4 left-0 right-0 z-10 flex items-center justify-between px-4">
-        {/* Duration */}
-        <div className="bg-black/40 backdrop-blur rounded-full px-4 py-1.5 text-white text-sm font-mono flex items-center gap-2">
-          <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
-          {formatCallDuration(callState.duration)}
-        </div>
-        {/* Participant count + fullscreen */}
-        <div className="flex items-center gap-2">
-          <div className="bg-black/40 backdrop-blur rounded-full px-3 py-1.5 text-white text-sm flex items-center gap-1.5">
-            <Users size={14} />
-            <span>{joinedCount}</span>
+      <div className="flex items-center justify-between px-5 py-3 z-10">
+        <div className="flex items-center gap-3">
+          <span className="font-semibold text-sm">{callState.conversationName}</span>
+          <div className="flex items-center gap-1.5 text-white/50 text-xs">
+            <div className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
+            {formatCallDuration(callState.duration)}
           </div>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button onClick={toggleFullscreen} className="bg-black/40 backdrop-blur rounded-full p-2 text-white hover:bg-black/60 transition-colors">
-                {isFullscreen ? <Minimize size={16} /> : <Maximize size={16} />}
-              </button>
-            </TooltipTrigger>
-            <TooltipContent>{isFullscreen ? "Exit fullscreen" : "Fullscreen"}</TooltipContent>
-          </Tooltip>
         </div>
       </div>
 
-      {/* Screen share toolbar for the user who is sharing */}
+      {/* Screen share banner for the sharer */}
       {isSelfSharing && (
-        <div className="absolute top-16 left-1/2 -translate-x-1/2 z-10 bg-red-600/90 backdrop-blur rounded-xl px-5 py-2.5 flex items-center gap-4 shadow-lg">
-          <MonitorUp size={18} className="text-white" />
-          <span className="text-white text-sm font-medium">You are sharing your screen</span>
+        <div className="mx-5 mb-2 bg-[#5b5fc7]/90 rounded-lg px-4 py-2 flex items-center gap-3 z-10">
+          <MonitorUp size={16} className="text-white" />
+          <span className="text-sm font-medium flex-1">You are sharing your screen</span>
           <button
             onClick={() => onUpdate({ isScreenSharing: false })}
-            className="flex items-center gap-1.5 bg-white/20 hover:bg-white/30 text-white rounded-lg px-3 py-1.5 text-sm font-medium transition-colors"
+            className="flex items-center gap-1.5 bg-white/20 hover:bg-white/30 text-white rounded-md px-3 py-1 text-sm font-medium transition-colors"
           >
             <StopCircle size={14} />
-            Stop sharing
+            Stop
           </button>
         </div>
       )}
 
-      {/* Video tiles */}
-      <div className="flex-1 p-4 relative">
+      {/* Video area */}
+      <div className={cn("flex-1 p-3 relative", showPeoplePanel && "mr-80")}>
         {callState.isScreenSharing ? (
-          /* Screen share layout: shared screen + participant thumbnails + self PIP */
-          <div className="h-full flex flex-col gap-3">
-            <div className="flex-1 rounded-xl bg-gray-800 flex flex-col items-center justify-center relative overflow-hidden">
+          /* Screen share layout */
+          <div className="h-full flex flex-col gap-2">
+            <div className="flex-1 rounded-lg bg-[#292929] flex items-center justify-center relative overflow-hidden">
               {featuredRemote?.media.stream && featuredRemote.media.hasVideo ? (
-                <StreamRenderer stream={featuredRemote.media.stream} className="h-full w-full rounded-xl object-contain" />
+                <StreamRenderer stream={featuredRemote.media.stream} className="h-full w-full rounded-lg object-contain" />
               ) : isSelfSharing && localStream ? (
-                <StreamRenderer stream={localStream} muted className="h-full w-full rounded-xl object-contain" />
+                <StreamRenderer stream={localStream} muted className="h-full w-full rounded-lg object-contain" />
               ) : (
-                <>
-                  <MonitorUp size={64} className="text-white/30 mb-3" />
-                  <p className="text-white font-medium">{isSelfSharing ? "You are" : (featuredRemote?.participant.name || "Participant") + " is"} sharing screen</p>
-                </>
+                <div className="flex flex-col items-center gap-3">
+                  <MonitorUp size={48} className="text-white/20" />
+                  <p className="text-white/50 text-sm">{isSelfSharing ? "You are" : (featuredRemote?.participant.name || "Participant") + " is"} sharing</p>
+                </div>
               )}
             </div>
-            {/* Thumbnails strip */}
-            <div className="flex gap-2 justify-center">
+            {/* Thumbnail strip */}
+            <div className="flex gap-2 justify-center py-1">
               {callState.participants.filter((p) => p.status === "joined").map((p) => {
                 const isLocal = p.username === currentUsername;
                 const pMedia = isLocal
@@ -1110,8 +1144,8 @@ function VideoCallOverlay({ callState, onUpdate, onEnd, currentUserName, current
                   <div
                     key={p.username}
                     className={cn(
-                      "w-28 h-20 rounded-lg bg-gray-800 flex flex-col items-center justify-center relative overflow-hidden",
-                      p.isSpeaking && "ring-2 ring-green-400"
+                      "w-28 h-20 rounded-lg bg-[#292929] flex items-center justify-center relative overflow-hidden",
+                      p.isSpeaking && "ring-2 ring-[#5b5fc7]"
                     )}
                   >
                     {pMedia?.stream && pMedia.hasVideo ? (
@@ -1119,60 +1153,61 @@ function VideoCallOverlay({ callState, onUpdate, onEnd, currentUserName, current
                     ) : (
                       <Avatar name={p.name} size={32} />
                     )}
-                    <span className="absolute bottom-1 left-1 text-[10px] text-white bg-black/40 px-1 rounded">
+                    <span className="absolute bottom-1 left-1 text-[10px] text-white bg-black/50 px-1 rounded">
                       {isLocal ? "You" : p.name.split(" ")[0]}
                     </span>
                   </div>
                 );
               })}
             </div>
-            {/* Self camera PIP when sharing screen */}
+            {/* Self camera PIP when sharing */}
             {isSelfSharing && localVideoEnabled && !callState.isVideoOff && localStream && (
-              <div className="absolute top-20 right-6 w-[200px] h-[150px] rounded-xl bg-gray-800 overflow-hidden border border-gray-600 shadow-xl z-10">
+              <div className="absolute top-16 right-4 w-[200px] h-[150px] rounded-lg bg-[#292929] overflow-hidden border border-white/10 shadow-xl z-10">
                 <StreamRenderer stream={localStream} muted className="h-full w-full object-cover" />
-                <span className="absolute bottom-2 left-2 text-[10px] text-white bg-black/40 px-1.5 py-0.5 rounded">Your camera</span>
+                <span className="absolute bottom-2 left-2 text-[10px] text-white bg-black/50 px-1.5 py-0.5 rounded">You</span>
               </div>
             )}
           </div>
         ) : isDm ? (
-          /* DM video: main tile + self PIP */
+          /* DM video: featured + self PIP */
           <div className="h-full relative">
             <div className={cn(
-                "h-full rounded-xl bg-gray-800 flex items-center justify-center relative overflow-hidden",
-                featuredRemote?.participant.isSpeaking && "ring-2 ring-green-400"
-              )}>
-                {featuredRemote?.media.stream && featuredRemote.media.hasVideo ? (
-                  <StreamRenderer stream={featuredRemote.media.stream} muted className="h-full w-full object-cover" />
-                ) : (
-                  <>
-                    {featuredRemote?.media.stream ? (
-                      <StreamRenderer stream={featuredRemote.media.stream} muted className="hidden" />
-                    ) : null}
-                    <Avatar name={featuredRemote?.participant.name || callState.conversationName} size={64} />
-                  </>
+              "h-full rounded-lg bg-[#292929] flex items-center justify-center relative overflow-hidden",
+              featuredRemote?.participant.isSpeaking && "ring-2 ring-[#5b5fc7]"
+            )}>
+              {featuredRemote?.media.stream && featuredRemote.media.hasVideo ? (
+                <StreamRenderer stream={featuredRemote.media.stream} muted className="h-full w-full object-cover" />
+              ) : (
+                <>
+                  {featuredRemote?.media.stream ? (
+                    <StreamRenderer stream={featuredRemote.media.stream} muted className="hidden" />
+                  ) : null}
+                  <div className="flex flex-col items-center gap-3">
+                    <Avatar name={featuredRemote?.participant.name || callState.conversationName} size={80} />
+                    <p className="text-white/60 text-sm">{featuredRemote?.participant.name || callState.conversationName}</p>
+                  </div>
+                </>
               )}
-              <span className="absolute bottom-3 left-3 text-white text-xs font-medium bg-black/40 px-2 py-0.5 rounded">
+              <span className="absolute bottom-3 left-3 text-white text-xs font-medium bg-black/50 px-2 py-0.5 rounded">
                 {featuredRemote?.participant.name || callState.conversationName}
               </span>
             </div>
             {/* Self PIP */}
-            <div className="absolute bottom-4 right-4 w-[240px] h-[135px] rounded-xl bg-gray-800 flex items-center justify-center overflow-hidden border border-gray-700">
+            <div className="absolute bottom-4 right-4 w-[220px] h-[124px] rounded-lg bg-[#292929] flex items-center justify-center overflow-hidden border border-white/10 shadow-lg">
               {!callState.isVideoOff && localVideoEnabled && localStream ? (
                 <StreamRenderer stream={localStream} muted className="h-full w-full object-cover" />
-              ) : callState.isVideoOff ? (
-                <div className="flex flex-col items-center gap-1">
-                  <Avatar name={currentUserName} size={48} />
-                  <span className="text-[10px] text-white/60">Camera off</span>
-                </div>
               ) : (
-                <Avatar name={currentUserName} size={48} />
+                <div className="flex flex-col items-center gap-1">
+                  <Avatar name={currentUserName} size={44} />
+                  {callState.isVideoOff && <span className="text-[10px] text-white/40">Camera off</span>}
+                </div>
               )}
-              <span className="absolute bottom-2 left-2 text-[10px] text-white bg-black/40 px-1.5 py-0.5 rounded">You</span>
+              <span className="absolute bottom-1.5 left-1.5 text-[10px] text-white bg-black/50 px-1.5 py-0.5 rounded">You</span>
             </div>
           </div>
         ) : (
           /* Group video: grid */
-          <div className="h-full grid grid-cols-2 gap-3">
+          <div className="h-full grid grid-cols-2 gap-2">
             {callState.participants
               .filter((p) => p.status === "joined")
               .map((p) => {
@@ -1180,152 +1215,66 @@ function VideoCallOverlay({ callState, onUpdate, onEnd, currentUserName, current
                   ? { stream: localStream, hasVideo: localVideoEnabled && !callState.isVideoOff }
                   : joinedRemoteMedia.find((item) => item.participant.username === p.username)?.media;
                 return (
-              <div
-                key={p.username}
-                className={cn(
-                  "rounded-xl bg-gray-800 flex items-center justify-center relative overflow-hidden",
-                  p.isSpeaking && "ring-2 ring-green-400"
-                )}
-                >
-                  {media?.stream && media.hasVideo ? (
-                    <StreamRenderer stream={media.stream} muted={p.username === currentUsername} className="h-full w-full object-cover" />
-                  ) : (
-                    <>
-                      {media?.stream ? (
-                        <StreamRenderer stream={media.stream} muted className="hidden" />
-                      ) : null}
-                      <Avatar name={p.name} size={64} />
-                    </>
-                )}
-                <span className="absolute bottom-2 left-2 text-white text-xs font-medium bg-black/40 px-2 py-0.5 rounded">
-                  {p.name}{p.username === currentUsername ? " (You)" : ""}
-                </span>
-              </div>
+                  <div
+                    key={p.username}
+                    className={cn(
+                      "rounded-lg bg-[#292929] flex items-center justify-center relative overflow-hidden",
+                      p.isSpeaking && "ring-2 ring-[#5b5fc7]"
+                    )}
+                  >
+                    {media?.stream && media.hasVideo ? (
+                      <StreamRenderer stream={media.stream} muted={p.username === currentUsername} className="h-full w-full object-cover" />
+                    ) : (
+                      <>
+                        {media?.stream ? <StreamRenderer stream={media.stream} muted className="hidden" /> : null}
+                        <div className="flex flex-col items-center gap-2">
+                          <Avatar name={p.name} size={64} />
+                        </div>
+                      </>
+                    )}
+                    <span className="absolute bottom-2 left-2 text-white text-xs font-medium bg-black/50 px-2 py-0.5 rounded">
+                      {p.name}{p.username === currentUsername ? " (You)" : ""}
+                    </span>
+                    {p.isMuted && (
+                      <span className="absolute top-2 right-2">
+                        <MicOff size={14} className="text-white/60" />
+                      </span>
+                    )}
+                  </div>
                 );
               })}
           </div>
         )}
       </div>
 
-      {/* Control bar */}
-      <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-3 bg-gray-900/80 backdrop-blur rounded-2xl px-6 py-4">
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              onClick={() => onUpdate({ isMuted: !callState.isMuted })}
-              className={cn(
-                "h-12 w-12 rounded-full flex items-center justify-center transition-colors",
-                callState.isMuted ? "bg-red-500/70 text-white" : "bg-white/10 hover:bg-white/20 text-white"
-              )}
-            >
-              {callState.isMuted ? <MicOff size={20} /> : <Mic size={20} />}
-            </button>
-          </TooltipTrigger>
-          <TooltipContent>{callState.isMuted ? "Unmute" : "Mute"}</TooltipContent>
-        </Tooltip>
+      {/* Teams toolbar */}
+      <TeamsCallToolbar
+        isMuted={callState.isMuted}
+        isVideoOff={callState.isVideoOff}
+        isScreenSharing={callState.isScreenSharing}
+        showPeoplePanel={showPeoplePanel}
+        onToggleMute={() => onUpdate({ isMuted: !callState.isMuted })}
+        onToggleVideo={() => onUpdate({ isVideoOff: !callState.isVideoOff })}
+        onToggleScreenShare={() => onUpdate({ isScreenSharing: !callState.isScreenSharing })}
+        onTogglePeople={() => setShowPeoplePanel(!showPeoplePanel)}
+        onLeave={onEnd}
+      />
 
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              onClick={() => onUpdate({ isVideoOff: !callState.isVideoOff })}
-              className={cn(
-                "h-12 w-12 rounded-full flex items-center justify-center transition-colors",
-                callState.isVideoOff ? "bg-red-500/70 text-white" : "bg-white/10 hover:bg-white/20 text-white"
-              )}
-            >
-              {callState.isVideoOff ? <VideoOff size={20} /> : <Video size={20} />}
-            </button>
-          </TooltipTrigger>
-          <TooltipContent>{callState.isVideoOff ? "Camera on" : "Camera off"}</TooltipContent>
-        </Tooltip>
-
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              onClick={() => onUpdate({ isScreenSharing: !callState.isScreenSharing })}
-              className={cn(
-                "h-12 w-12 rounded-full flex items-center justify-center transition-colors",
-                callState.isScreenSharing ? "bg-green-600/80 text-white" : "bg-white/10 hover:bg-white/20 text-white"
-              )}
-            >
-              <MonitorUp size={20} />
-            </button>
-          </TooltipTrigger>
-          <TooltipContent>{callState.isScreenSharing ? "Stop sharing" : "Share screen"}</TooltipContent>
-        </Tooltip>
-
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              onClick={handleHold}
-              className={cn(
-                "h-12 w-12 rounded-full flex items-center justify-center transition-colors",
-                isOnHold ? "bg-yellow-500/70 text-white" : "bg-white/10 hover:bg-white/20 text-white"
-              )}
-            >
-              {isOnHold ? <Play size={20} /> : <Pause size={20} />}
-            </button>
-          </TooltipTrigger>
-          <TooltipContent>{isOnHold ? "Resume" : "Hold"}</TooltipContent>
-        </Tooltip>
-
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              onClick={() => setShowAddPanel(!showAddPanel)}
-              className={cn(
-                "h-12 w-12 rounded-full flex items-center justify-center transition-colors",
-                showAddPanel ? "bg-primary text-white" : "bg-white/10 hover:bg-white/20 text-white"
-              )}
-            >
-              <UserRoundPlus size={20} />
-            </button>
-          </TooltipTrigger>
-          <TooltipContent>Add participant</TooltipContent>
-        </Tooltip>
-
-        <button
-          onClick={onEnd}
-          className="h-12 w-12 rounded-full bg-red-500 hover:bg-red-600 text-white flex items-center justify-center transition-colors ml-2"
-        >
-          <PhoneOff size={20} />
-        </button>
-      </div>
-
-      {/* Add Participant Panel */}
-      {showAddPanel && (
-        <div className="absolute bottom-28 left-1/2 -translate-x-1/2 w-80 bg-gray-900/95 backdrop-blur border border-white/10 rounded-2xl p-4 shadow-2xl z-20">
-          <p className="text-sm font-medium text-white mb-2">Add participant</p>
-          <Input
-            placeholder="Search users..."
-            value={addSearch}
-            onChange={(e) => setAddSearch(e.target.value)}
-            className="mb-2 bg-white/5 border-white/10 text-white placeholder:text-white/40"
-          />
-          <div className="space-y-1 max-h-[180px] overflow-y-auto">
-            {addableUsers.length === 0 ? (
-              <p className="text-xs text-white/40 text-center py-2">No users found</p>
-            ) : addableUsers.slice(0, 8).map((u) => (
-              <button
-                key={u.username}
-                onClick={() => { onAddParticipant(u.username); setShowAddPanel(false); setAddSearch(""); }}
-                className="w-full flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-white/10 transition-colors text-white"
-              >
-                <Avatar name={u.displayName} size={28} />
-                <div className="min-w-0 text-left">
-                  <span className="text-sm block truncate">{u.displayName}</span>
-                  <span className="text-[10px] text-white/40 block">@{u.username}</span>
-                </div>
-              </button>
-            ))}
-          </div>
-        </div>
+      {/* People panel */}
+      {showPeoplePanel && (
+        <TeamsPeoplePanel
+          participants={callState.participants}
+          currentUsername={currentUsername}
+          availableUsers={availableUsers}
+          onAddParticipant={onAddParticipant}
+          onClose={() => setShowPeoplePanel(false)}
+        />
       )}
     </div>
   );
 }
 
-// â"€â"€â"€ Incoming Call Notification â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+// ——— Incoming Call Notification (Teams Style) ————————————
 
 function IncomingCallBanner({ callerName, type, onAccept, onDecline }: {
   callerName: string;
@@ -1339,56 +1288,48 @@ function IncomingCallBanner({ callerName, type, onAccept, onDecline }: {
   const callLabel = isVoiceCall ? "Voice call" : isScreenShare ? "Screen share" : "Video call";
 
   return (
-    <div className="fixed inset-0 z-[60] bg-gradient-to-b from-gray-900 via-gray-900 to-gray-950 flex flex-col items-center justify-center text-white">
-      {/* Animated pulse rings */}
+    <div className="fixed inset-0 z-[60] bg-[#1f1f1f] flex flex-col items-center justify-center text-white">
+      {/* Avatar with speaking ring */}
       <div className="relative mb-6">
-        <div className="absolute inset-0 -m-6 rounded-full bg-green-500/10 animate-ping" style={{ animationDuration: "2s" }} />
-        <div className="absolute inset-0 -m-3 rounded-full bg-green-500/15 animate-pulse" style={{ animationDuration: "1.5s" }} />
-        <Avatar name={callerName} size={120} />
-        <div className="absolute -bottom-2 -right-2 w-10 h-10 bg-green-500 rounded-full flex items-center justify-center shadow-lg shadow-green-500/30">
-          <CallIcon size={20} className="text-white" />
-        </div>
+        <div className="absolute inset-0 -m-4 rounded-full border-2 border-[#5b5fc7] animate-pulse" style={{ animationDuration: "2s" }} />
+        <div className="absolute inset-0 -m-8 rounded-full border border-[#5b5fc7]/30 animate-ping" style={{ animationDuration: "3s" }} />
+        <Avatar name={callerName} size={100} />
       </div>
 
       {/* Caller info */}
-      <p className="text-2xl font-bold mt-2">{callerName}</p>
-      <p className="text-base text-white/60 mt-1">{callLabel}</p>
+      <p className="text-xl font-semibold mt-2">{callerName}</p>
+      <p className="text-sm text-white/50 mt-1">{callLabel} - incoming</p>
 
-      {/* Ringing indicator */}
-      <div className="flex items-center gap-2 mt-4">
-        <div className="flex gap-1">
-          {[0, 1, 2].map((i) => (
-            <div
-              key={i}
-              className="w-2 h-2 bg-green-400 rounded-full animate-bounce"
-              style={{ animationDelay: `${i * 0.2}s` }}
-            />
-          ))}
-        </div>
-        <span className="text-sm text-white/50">Ringing...</span>
-      </div>
-
-      {/* Action buttons */}
-      <div className="flex items-center gap-12 mt-16">
-        <div className="flex flex-col items-center gap-2">
-          <button
-            onClick={onDecline}
-            className="h-16 w-16 rounded-full bg-red-500 hover:bg-red-600 text-white flex items-center justify-center transition-all hover:scale-105 shadow-lg shadow-red-500/30"
-          >
-            <PhoneOff size={28} />
-          </button>
-          <span className="text-xs text-white/60">Decline</span>
-        </div>
-        <div className="flex flex-col items-center gap-2">
+      {/* Action buttons - Teams style */}
+      <div className="flex items-center gap-4 mt-12">
+        {/* Accept with video (for video calls) */}
+        {type === "video" && (
           <button
             onClick={onAccept}
-            className="h-16 w-16 rounded-full bg-green-500 hover:bg-green-600 text-white flex items-center justify-center transition-all hover:scale-105 shadow-lg shadow-green-500/30 animate-pulse"
-            style={{ animationDuration: "2s" }}
+            className="flex flex-col items-center gap-1.5 px-5 py-3 rounded-xl bg-[#5b5fc7] hover:bg-[#4b4fb7] text-white transition-colors"
           >
-            <CallIcon size={28} />
+            <Video size={24} />
+            <span className="text-xs font-medium">Accept</span>
           </button>
-          <span className="text-xs text-white/60">Accept</span>
-        </div>
+        )}
+
+        {/* Accept with audio */}
+        <button
+          onClick={onAccept}
+          className="flex flex-col items-center gap-1.5 px-5 py-3 rounded-xl bg-[#107c10] hover:bg-[#0e6b0e] text-white transition-colors"
+        >
+          <CallIcon size={24} />
+          <span className="text-xs font-medium">{type === "video" ? "Audio" : "Accept"}</span>
+        </button>
+
+        {/* Decline */}
+        <button
+          onClick={onDecline}
+          className="flex flex-col items-center gap-1.5 px-5 py-3 rounded-xl bg-[#d13438] hover:bg-[#bc2f32] text-white transition-colors"
+        >
+          <PhoneOff size={24} />
+          <span className="text-xs font-medium">Decline</span>
+        </button>
       </div>
     </div>
   );
@@ -1465,8 +1406,10 @@ function InfoPanel({
               {dmParticipant?.email || dmParticipant?.username || conversation.name}
             </p>
             <div className="flex items-center gap-1 mt-1">
-              <OnlineDot size={6} />
-              <span className="text-xs text-green-500">Online</span>
+              <OnlineDot size={6} isOnline={isRecentlyActive(conversation.lastMessageAt)} />
+              <span className={cn("text-xs", isRecentlyActive(conversation.lastMessageAt) ? "text-green-500" : "text-muted-foreground")}>
+                {isRecentlyActive(conversation.lastMessageAt) ? "Active now" : conversation.lastMessageAt ? `Last seen ${formatRelativeTime(conversation.lastMessageAt)}` : "Offline"}
+              </span>
             </div>
           </>
         ) : (
@@ -1513,7 +1456,7 @@ function InfoPanel({
                 <div key={member.name} className="flex items-center gap-2">
                   <div className="relative">
                     <Avatar name={member.name} size={36} />
-                    <OnlineDot size={6} className="absolute bottom-0 right-0" />
+                    <OnlineDot size={6} className="absolute bottom-0 right-0" isOnline={isRecentlyActive(conversation.lastMessageAt)} />
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5">
@@ -1711,6 +1654,7 @@ export default function Talk() {
   const [newGroupMembers, setNewGroupMembers] = useState<string[]>([]);
   const [newDmSearch, setNewDmSearch] = useState("");
   const [localVideoEnabled, setLocalVideoEnabled] = useState(false);
+  const [localStreamState, setLocalStreamState] = useState<MediaStream | null>(null);
   const [remoteMedia, setRemoteMedia] = useState<RemoteCallMedia[]>([]);
   const [isUploadingAttachment, setIsUploadingAttachment] = useState(false);
   const [replyTo, setReplyTo] = useState<Message | null>(null);
@@ -1736,7 +1680,8 @@ export default function Talk() {
   const { data: conversationsData } = useQuery({
     queryKey: ["/api/conversations"],
     queryFn: () => fetchJson<{ data: Conversation[] }>("/api/conversations"),
-    refetchInterval: 10000,
+    refetchInterval: 5000,
+    refetchIntervalInBackground: true,
   });
 
   const conversations = conversationsData?.data || [];
@@ -1758,7 +1703,8 @@ export default function Talk() {
     queryKey: ["/api/conversations/messages", activeConversationId],
     queryFn: () => fetchJson<{ data: Message[] }>(`/api/conversations/${activeConversationId}/messages`),
     enabled: !!activeConversationId,
-    refetchInterval: 3000,
+    refetchInterval: 2000,
+    refetchIntervalInBackground: true,
   });
 
   const { data: messagesData } = messagesQuery;
@@ -1958,7 +1904,7 @@ export default function Talk() {
     localStreamRef.current?.getTracks().forEach((track) => track.stop());
     previousLocalStreamRef.current?.getTracks().forEach((track) => track.stop());
     previousLocalStreamRef.current = null;
-    localStreamRef.current = null;
+    localStreamRef.current = null; setLocalStreamState(null);
     for (const username of Array.from(peerConnectionsRef.current.keys())) {
       stopPeerConnection(username);
     }
@@ -2056,6 +2002,7 @@ export default function Talk() {
   async function replaceLocalStream(nextStream: MediaStream, conversationId: number, isScreenSharing: boolean) {
     const previous = localStreamRef.current;
     localStreamRef.current = nextStream;
+    setLocalStreamState(nextStream);
     setLocalVideoEnabled(nextStream.getVideoTracks().length > 0);
 
     for (const connection of peerConnectionsRef.current.values()) {
@@ -2078,6 +2025,7 @@ export default function Talk() {
 
     const stream = await getLocalMedia(type);
     localStreamRef.current = stream;
+    setLocalStreamState(stream);
     previousLocalStreamRef.current = type === "screen" ? null : stream;
     setLocalVideoEnabled(stream.getVideoTracks().length > 0);
     for (const connection of peerConnectionsRef.current.values()) {
@@ -2312,9 +2260,35 @@ export default function Talk() {
     }
 
     if (typeof partial.isVideoOff === "boolean") {
-      localStreamRef.current?.getVideoTracks().forEach((track) => {
-        track.enabled = !partial.isVideoOff;
-      });
+      const wantsVideoOn = !partial.isVideoOff;
+      const hasVideoTrack = (localStreamRef.current?.getVideoTracks().length ?? 0) > 0;
+
+      if (wantsVideoOn && !hasVideoTrack) {
+        // Voice call → need to acquire camera and add video track
+        try {
+          const videoStream = await navigator.mediaDevices.getUserMedia({ video: true });
+          const videoTrack = videoStream.getVideoTracks()[0];
+          if (videoTrack && localStreamRef.current) {
+            localStreamRef.current.addTrack(videoTrack);
+            setLocalStreamState(localStreamRef.current);
+            // Add track to all peer connections
+            for (const connection of peerConnectionsRef.current.values()) {
+              connection.addTrack(videoTrack, localStreamRef.current);
+            }
+            setLocalVideoEnabled(true);
+          }
+        } catch (error) {
+          showToast(getMediaAccessErrorMessage(error, "call"));
+          return;
+        }
+        // Switch overlay from voice to video
+        partial = { ...partial, type: "video" };
+      } else {
+        localStreamRef.current?.getVideoTracks().forEach((track) => {
+          track.enabled = wantsVideoOn;
+        });
+        if (wantsVideoOn) setLocalVideoEnabled(true);
+      }
     }
 
     if (typeof partial.isScreenSharing === "boolean" && partial.isScreenSharing !== existing.isScreenSharing) {
@@ -2331,8 +2305,11 @@ export default function Talk() {
 
   async function acceptIncomingCall() {
     if (!activeConversationId || !callSignal) return;
+    // Receiver always joins with voice (audio only) — never prompt for screenshare.
+    // If the caller is sharing their screen, the receiver just views it.
+    const receiverMediaType = callSignal.type === "screen" ? "voice" : callSignal.type;
     try {
-      const stream = await ensureMediaAndTracks(callSignal.type, activeConversationId);
+      const stream = await ensureMediaAndTracks(receiverMediaType, activeConversationId);
       previousLocalStreamRef.current = stream;
     } catch (error) {
       showToast(getMediaAccessErrorMessage(error, "call"));
@@ -2356,14 +2333,14 @@ export default function Talk() {
 
     setCallState({
       active: true,
-      type: payload.data.type,
+      type: payload.data.type === "screen" ? "video" : payload.data.type,
       conversationId: conversation.id,
       conversationName: conversation.name,
       startedAt: new Date(payload.data.startedAt),
       isMuted: false,
-      isVideoOff: payload.data.type === "voice",
+      isVideoOff: receiverMediaType === "voice",
       isSpeakerOn: true,
-      isScreenSharing: payload.data.isScreenSharing,
+      isScreenSharing: false, // Receiver is NOT sharing; they just view the caller's share
       participants: mapCallParticipants(payload.data.participants),
       duration: 0,
     });
@@ -2822,7 +2799,7 @@ export default function Talk() {
           currentUserName={currentUserName}
           currentUsername={currentUsername}
           onAddParticipant={handleAddCallParticipant}
-          localStream={localStreamRef.current}
+          localStream={localStreamState}
           localVideoEnabled={localVideoEnabled}
           remoteMedia={remoteMedia}
           availableUsers={availableUsers}
@@ -2963,15 +2940,17 @@ export default function Talk() {
                 <div className="relative">
                   <Avatar name={activeConversation.name} size={36} isGroup={activeConversation.type === "group"} />
                   {activeConversation.type === "dm" && (
-                    <OnlineDot size={8} className="absolute bottom-0 right-0" />
+                    <OnlineDot size={8} className="absolute bottom-0 right-0" isOnline={isRecentlyActive(activeConversation.lastMessageAt)} />
                   )}
                 </div>
                 <div>
                   <p className="font-semibold text-sm">{activeConversation.name}</p>
                   {activeConversation.type === "dm" ? (
                     <div className="flex items-center gap-1">
-                      <OnlineDot size={6} />
-                      <span className="text-xs text-green-500">Online</span>
+                      <OnlineDot size={6} isOnline={isRecentlyActive(activeConversation.lastMessageAt)} />
+                      <span className={cn("text-xs", isRecentlyActive(activeConversation.lastMessageAt) ? "text-green-500" : "text-muted-foreground")}>
+                        {isRecentlyActive(activeConversation.lastMessageAt) ? "Active now" : "Offline"}
+                      </span>
                     </div>
                   ) : (
                     <span className="text-xs text-muted-foreground">
@@ -3039,19 +3018,21 @@ export default function Talk() {
                   <TooltipContent>Screen share</TooltipContent>
                 </Tooltip>
 
-                {/* Add participants / manage call */}
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button
-                      aria-label="Open participants"
-                      onClick={() => setShowInfoPanel(true)}
-                      className="h-8 w-8 rounded-lg flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-                    >
-                      <UserPlus size={18} />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent>Add people</TooltipContent>
-                </Tooltip>
+                {/* Add participants — only for group chats */}
+                {activeConversation.type === "group" && (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        aria-label="Open participants"
+                        onClick={() => setShowInfoPanel(true)}
+                        className="h-8 w-8 rounded-lg flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                      >
+                        <UserPlus size={18} />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent>Add people</TooltipContent>
+                  </Tooltip>
+                )}
 
                 {/* Search */}
                 <Tooltip>
@@ -3128,7 +3109,7 @@ export default function Talk() {
                   {group.messages.map((msg, mi) => {
                     const isSent = currentUserId > 0
                       ? msg.senderId === currentUserId
-                      : msg.senderName === currentUserName;
+                      : (msg.senderName === currentUserName || msg.senderName === currentUsername);
                     const prevMsg = mi > 0 ? group.messages[mi - 1] : gi > 0 ? visibleGroupedMessages[gi - 1].messages.at(-1) : undefined;
                     const isConsecutive = prevMsg
                       && prevMsg.senderId === msg.senderId
