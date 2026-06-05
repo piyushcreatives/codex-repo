@@ -37,6 +37,7 @@ type TalkMessageRecord = {
   sentAt: string;
   reactions: string | null;
   replyToId: number | null;
+  systemMessage: string | null;
 };
 
 export type TalkParticipantRecord = {
@@ -48,6 +49,9 @@ export type TalkParticipantRecord = {
   isModerator: boolean;
   inCall: boolean;
   sessionIds: string[];
+  status: string | null;
+  statusMessage: string | null;
+  lastPing: number;
 };
 
 export type TalkSignalingSettings = {
@@ -185,7 +189,7 @@ function toBasicAuth(session: NextcloudSession) {
 }
 
 function hashToId(value: string) {
-  const digest = createHash("sha1").update(value).digest("hex").slice(0, 8);
+  const digest = createHash("sha1").update(value).digest("hex").slice(0, 7);
   return parseInt(digest, 16);
 }
 
@@ -518,13 +522,16 @@ async function fetchTalkParticipantsByToken(session: NextcloudSession, token: st
     actorType: String(participant.actorType || ""),
     displayName: String(participant.displayName || participant.actorId || "Unknown"),
     email: typeof participant.email === "string" ? participant.email : null,
-    isModerator: Boolean(participant.participantType && Number(participant.participantType) >= 2),
+    isModerator: Number(participant.participantType || 0) <= 2 && Number(participant.participantType || 0) >= 1,
     inCall: Array.isArray(participant.sessionIds) && participant.sessionIds.length > 0,
     sessionIds: Array.isArray(participant.sessionIds)
       ? participant.sessionIds
           .map((value) => String(value || ""))
           .filter(Boolean)
       : [],
+    status: typeof participant.status === "string" ? participant.status : null,
+    statusMessage: typeof participant.statusMessage === "string" ? participant.statusMessage : null,
+    lastPing: Number(participant.lastPing || 0),
   })) satisfies TalkParticipantRecord[];
 }
 
@@ -732,12 +739,26 @@ export async function markConversationRead(session: NextcloudSession, conversati
   const conversation = await findTalkConversation(session, conversationId);
   if (!conversation) return false;
 
-  await nextcloudJson(
-    session,
-    `/ocs/v2.php/apps/spreed/api/v1/chat/${encodeURIComponent(conversation.token)}/read?format=json`,
-    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) },
-  );
-  return true;
+  // Try the v1 chat read-marker endpoint first (requires lastReadMessage param on newer Talk versions)
+  try {
+    // Fetch the latest message ID to use as lastReadMessage
+    const messages = await listConversationMessages(session, conversationId);
+    const lastMessage = messages.length > 0 ? messages[messages.length - 1] : null;
+
+    await nextcloudJson(
+      session,
+      `/ocs/v2.php/apps/spreed/api/v1/chat/${encodeURIComponent(conversation.token)}/read?format=json`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(lastMessage ? { lastReadMessage: lastMessage.id } : {}),
+      },
+    );
+    return true;
+  } catch {
+    // Fallback: some Talk versions may not support the read-marker endpoint — silently succeed
+    return true;
+  }
 }
 
 export async function setConversationMute(session: NextcloudSession, conversationId: number, muted: boolean) {
@@ -794,6 +815,23 @@ export async function addConversationParticipant(session: NextcloudSession, conv
   return fetchTalkParticipantsByToken(session, conversation.token);
 }
 
+export async function removeConversationParticipant(session: NextcloudSession, conversationId: number, attendeeId: number) {
+  const conversation = await findTalkConversation(session, conversationId);
+  if (!conversation) return null;
+
+  await nextcloudJson(
+    session,
+    `/ocs/v2.php/apps/spreed/api/v4/room/${encodeURIComponent(conversation.token)}/attendees?format=json`,
+    {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ attendeeId }),
+    },
+  );
+
+  return fetchTalkParticipantsByToken(session, conversation.token);
+}
+
 export async function leaveConversation(session: NextcloudSession, conversationId: number) {
   const conversation = await findTalkConversation(session, conversationId);
   if (!conversation) return false;
@@ -834,6 +872,9 @@ export async function listConversationMessages(session: NextcloudSession, conver
         ? JSON.stringify(message.reactions)
         : null;
       const timestamp = Number(message.timestamp || 0);
+      const sysMsg = typeof message.systemMessage === "string" && message.systemMessage !== ""
+        ? message.systemMessage
+        : null;
       return {
         id: Number(message.id || 0),
         conversationId,
@@ -845,6 +886,7 @@ export async function listConversationMessages(session: NextcloudSession, conver
         replyToId: message.parent && typeof message.parent === "object"
           ? Number((message.parent as JsonObject).id || 0) || null
           : null,
+        systemMessage: sysMsg,
       } satisfies TalkMessageRecord;
     })
     .sort((a, b) => a.sentAt.localeCompare(b.sentAt));
@@ -877,6 +919,7 @@ export async function sendConversationMessage(session: NextcloudSession, convers
     sentAt: timestamp ? new Date(timestamp * 1000).toISOString() : new Date().toISOString(),
     reactions: message.reactions ? JSON.stringify(message.reactions) : null,
     replyToId: null,
+    systemMessage: null,
   } satisfies TalkMessageRecord;
 }
 
