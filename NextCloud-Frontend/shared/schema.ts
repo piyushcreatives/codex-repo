@@ -60,6 +60,7 @@ export const messages = sqliteTable("messages", {
   sentAt: text("sent_at").notNull(),
   reactions: text("reactions"), // JSON: { emoji: count }
   replyToId: integer("reply_to_id"),
+  systemMessage: text("system_message"), // non-null for system/notification messages
 });
 
 export const insertConversationSchema = createInsertSchema(conversations).omit({ id: true });

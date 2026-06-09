@@ -2484,6 +2484,9 @@ function TalkInner() {
     queryFn: () => fetchJson<{ data: ConversationCallSignal | null }>(`/api/conversations/${activeConversationId}/call`),
     enabled: !!activeConversationId && !isRemovedFromChat,
     refetchInterval: isRemovedFromChat ? false : 1500,
+    refetchIntervalInBackground: true,
+    staleTime: 0,
+    gcTime: 1000,
   });
   const callSignal = callSignalData?.data;
 

@@ -170,21 +170,33 @@ function AppRoutes() {
     }
 
     let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
 
-    fetchJson<AppCapabilities>("/api/capabilities")
-      .then((next) => {
-        if (!cancelled) {
+    const fetchCaps = () => {
+      fetchJson<AppCapabilities>("/api/capabilities")
+        .then((next) => {
+          if (cancelled) return;
           setCapabilities(next);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
+          // If the backend returned defaults (e.g. it restarted and hasn't probed
+          // Nextcloud yet), retry after a short delay so the sidebar doesn't stay
+          // grey forever.
+          if (next.source === "default" && !next.talk) {
+            retryTimer = setTimeout(fetchCaps, 3000);
+          }
+        })
+        .catch(() => {
+          if (cancelled) return;
           setCapabilities(defaultCapabilities);
-        }
-      });
+          // Retry on network error (backend might be restarting)
+          retryTimer = setTimeout(fetchCaps, 3000);
+        });
+    };
+
+    fetchCaps();
 
     return () => {
       cancelled = true;
+      if (retryTimer) clearTimeout(retryTimer);
     };
   }, [session]);
 

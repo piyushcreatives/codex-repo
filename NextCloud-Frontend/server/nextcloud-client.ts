@@ -418,6 +418,27 @@ export async function downloadFile(session: NextcloudSession, cloudPath: string)
   };
 }
 
+export async function createPublicShareLink(session: NextcloudSession, cloudPath: string): Promise<string | null> {
+  try {
+    const response = await nextcloudJson<{ ocs: { data: { url?: string; token?: string } } }>(
+      session,
+      "/ocs/v2.php/apps/files_sharing/api/v1/shares",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          path: cloudPath,
+          shareType: 3, // 3 = public link
+          permissions: 1, // 1 = read only
+        }),
+      },
+    );
+    return response.ocs?.data?.url || null;
+  } catch {
+    return null;
+  }
+}
+
 export async function deleteFile(session: NextcloudSession, cloudPath: string) {
   const response = await nextcloudFetch(session, toDavUrl(session.username, cloudPath), {
     method: "DELETE",
