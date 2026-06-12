@@ -116,7 +116,7 @@ export default function Files() {
     queryFn: () => fetchJson<{ data: CloudFile[] }>(`/api/files?path=${encodeURIComponent(currentPath)}`).then((payload) => payload.data),
   });
 
-  const files = filesQuery.data ?? [];
+  const files = Array.isArray(filesQuery.data) ? filesQuery.data : [];
   const totalSize = useMemo(
     () => files.filter((file) => file.type === "file").reduce((sum, file) => sum + file.size, 0),
     [files],

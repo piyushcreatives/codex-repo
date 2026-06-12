@@ -1,5 +1,6 @@
 import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
+import basicSsl from "@vitejs/plugin-basic-ssl";
 import path from "path";
 
 export default defineConfig(({ mode }) => {
@@ -8,9 +9,14 @@ export default defineConfig(({ mode }) => {
   const nextcloudProxyTarget =
     env.VITE_NEXTCLOUD_PROXY_TARGET || env.NC_BASE_URL || "http://localhost:8090";
   const port = Number(env.VITE_PORT || 5173);
+  const httpsEnabled = env.VITE_HTTPS === "true";
+  const host = env.VITE_HOST || "0.0.0.0";
 
   return {
-    plugins: [react()],
+    plugins: [
+      react(),
+      httpsEnabled ? basicSsl() : null,
+    ].filter(Boolean),
     root: "client",
     resolve: {
       alias: {
@@ -19,17 +25,24 @@ export default defineConfig(({ mode }) => {
       },
     },
     server: {
+      host,
+      https: httpsEnabled,
       port,
       strictPort: true,
       proxy: {
-        "/api": apiProxyTarget,
+        "/api": {
+          target: apiProxyTarget,
+          secure: false,  // accept self-signed certs
+        },
         "/remote.php": {
           target: nextcloudProxyTarget,
           changeOrigin: true,
+          secure: false,
         },
         "/ocs": {
           target: nextcloudProxyTarget,
           changeOrigin: true,
+          secure: false,
         },
       },
     },

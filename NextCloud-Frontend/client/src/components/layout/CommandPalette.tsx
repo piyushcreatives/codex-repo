@@ -1,11 +1,13 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
 import { useLocation } from "wouter";
+import { useQuery } from "@tanstack/react-query";
 import {
   LayoutDashboard, FolderOpen, MessageSquare, CalendarDays, StickyNote,
   Users, Kanban, Mail, Activity, Image, Settings, Search, FileText,
   Plus, Upload,
 } from "lucide-react";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
+import { fetchJson } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 const NAV_ITEMS = [
@@ -29,22 +31,10 @@ const QUICK_ACTIONS = [
   { label: "Upload file", icon: Upload, href: "/files", category: "Quick action" },
 ];
 
-const MOCK_FILES = [
-  { label: "Q4 Report.pdf", icon: FileText, href: "/files", category: "File" },
-  { label: "Design Mockups.fig", icon: FileText, href: "/files", category: "File" },
-  { label: "Budget 2026.xlsx", icon: FileText, href: "/files", category: "File" },
-  { label: "Meeting Notes.md", icon: FileText, href: "/files", category: "File" },
-  { label: "Product Roadmap.docx", icon: FileText, href: "/files", category: "File" },
-];
-
-const MOCK_CONTACTS = [
-  { label: "Rohan Mehta", icon: Users, href: "/contacts", category: "Contact" },
-  { label: "Priya Kapoor", icon: Users, href: "/contacts", category: "Contact" },
-  { label: "Arjun Singh", icon: Users, href: "/contacts", category: "Contact" },
-  { label: "Neha Gupta", icon: Users, href: "/contacts", category: "Contact" },
-];
-
 type ResultItem = { label: string; icon: typeof Search; href: string; category: string };
+type CloudFileResult = { name: string; path: string };
+type ContactResult = { id: number; name: string };
+type NoteResult = { id: number; title: string };
 
 interface CommandPaletteProps {
   open: boolean;
@@ -55,20 +45,53 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
   const [, navigate] = useLocation();
   const [query, setQuery] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const { data: filesData } = useQuery({
+    queryKey: ["/api/files", "/"],
+    queryFn: () => fetchJson<{ data: CloudFileResult[] }>("/api/files?path=%2F"),
+  });
+  const { data: contactsData } = useQuery({
+    queryKey: ["/api/contacts"],
+    queryFn: () => fetchJson<{ data: ContactResult[] }>("/api/contacts"),
+  });
+  const { data: notesData } = useQuery({
+    queryKey: ["/api/notes"],
+    queryFn: () => fetchJson<{ data: NoteResult[] }>("/api/notes"),
+  });
 
   const results = useMemo(() => {
     const q = query.toLowerCase().trim();
+    const liveFiles: ResultItem[] = (filesData?.data || []).slice(0, 8).map((file) => ({
+      label: file.name,
+      icon: FileText,
+      href: `/files`,
+      category: "File",
+    }));
+    const liveContacts: ResultItem[] = (contactsData?.data || []).slice(0, 8).map((contact) => ({
+      label: contact.name,
+      icon: Users,
+      href: "/contacts",
+      category: "Contact",
+    }));
+    const liveNotes: ResultItem[] = (notesData?.data || []).slice(0, 8).map((note) => ({
+      label: note.title,
+      icon: StickyNote,
+      href: "/notes",
+      category: "Note",
+    }));
+
     if (!q) {
       return [
         { group: "Quick actions", items: QUICK_ACTIONS },
         { group: "Navigation", items: NAV_ITEMS },
+        { group: "Recent files", items: liveFiles.slice(0, 5) },
       ];
     }
     const matched: ResultItem[] = [
       ...NAV_ITEMS,
       ...QUICK_ACTIONS,
-      ...MOCK_FILES,
-      ...MOCK_CONTACTS,
+      ...liveFiles,
+      ...liveContacts,
+      ...liveNotes,
     ].filter((item) => item.label.toLowerCase().includes(q));
 
     const groups = new Map<string, ResultItem[]>();
@@ -77,7 +100,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
       groups.get(item.category)!.push(item);
     }
     return Array.from(groups.entries()).map(([group, items]) => ({ group, items }));
-  }, [query]);
+  }, [contactsData?.data, filesData?.data, notesData?.data, query]);
 
   const flatResults = useMemo(() => results.flatMap((g) => g.items), [results]);
 

@@ -13,10 +13,16 @@ export type DelegatedCredential = {
   createdAt: string;
 };
 
+export type NextcloudWebSession = {
+  cookies: string[];
+  createdAt: string;
+};
+
 export type NextcloudSession = {
   username: string;
   credential: DelegatedCredential;
   displayNameOverride?: string;
+  webSession?: NextcloudWebSession;
 };
 
 type NextcloudUserPayload = {

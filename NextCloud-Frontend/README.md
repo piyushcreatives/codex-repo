@@ -122,6 +122,8 @@ SESSION_COOKIE_SECURE=false
 ALLOW_MOCK_SERVICES=false
 PORT=5000
 VITE_PORT=5173
+VITE_HOST=0.0.0.0
+VITE_HTTPS=false
 VITE_API_PROXY_TARGET=http://localhost:5000
 VITE_NEXTCLOUD_PROXY_TARGET=http://localhost:8090
 ```
@@ -138,8 +140,12 @@ VITE_NEXTCLOUD_PROXY_TARGET=http://localhost:8090
 | `NEXTCLOUD_APP_PASSWORD_LABEL` | `CloudSpace Adapter` | Label/User-Agent used when requesting a delegated Nextcloud app password. |
 | `PORT` | `5000` | Express adapter port. Vite proxies `/api` to this port. |
 | `VITE_PORT` | `5173` | Frontend dev server port. |
+| `VITE_HOST` | `0.0.0.0` | Host binding for LAN/local testing. |
+| `VITE_HTTPS` | `false` locally / `true` for secure LAN media tests | Enables Vite HTTPS using a local self-signed dev certificate. |
 | `VITE_API_PROXY_TARGET` | `http://localhost:5000` | API proxy target for `/api`. |
 | `VITE_NEXTCLOUD_PROXY_TARGET` | `http://localhost:8090` | Proxy target for `/ocs` and `/remote.php`. |
+
+For WebRTC camera, microphone, and screen sharing from another device, set `VITE_HTTPS=true` and open the Vite server over `https://...`. Browsers allow media capture on `localhost` or secure origins only.
 
 ### 3. Nextcloud Backend Setup
 

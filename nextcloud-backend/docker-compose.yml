@@ -82,6 +82,29 @@ services:
       nextcloud:
         condition: service_healthy
 
+  coturn:
+    image: coturn/coturn:latest
+    restart: unless-stopped
+    networks:
+      - nextcloud_net
+    ports:
+      - "3478:3478/tcp"
+      - "3478:3478/udp"
+      - "49160-49200:49160-49200/udp"
+    command:
+      - "--listening-port=3478"
+      - "--realm=cloudspace.local"
+      - "--use-auth-secret"
+      - "--static-auth-secret=${TURN_SECRET:-cloudspace-turn-secret-2026}"
+      - "--min-port=49160"
+      - "--max-port=49200"
+      - "--no-tls"
+      - "--no-dtls"
+      - "--fingerprint"
+      - "--log-file=stdout"
+      - "--no-cli"
+      - "--no-software-attribute"
+
 networks:
   nextcloud_net:
     driver: bridge

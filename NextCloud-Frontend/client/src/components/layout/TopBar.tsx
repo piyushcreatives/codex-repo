@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
@@ -47,12 +47,25 @@ const pageTitles: Record<string, string> = {
   "/settings": "Settings",
 };
 
-const MOCK_NOTIFICATIONS = [
-  { id: 1, icon: FileUp, color: "bg-blue-100 text-blue-600 dark:bg-blue-900/40 dark:text-blue-400", text: "Rohan shared Design Mockups.fig with you", time: "10 min ago", unread: true },
-  { id: 2, icon: MessageSquare, color: "bg-indigo-100 text-indigo-600 dark:bg-indigo-900/40 dark:text-indigo-400", text: "New message in Product Team: Sprint planning tomorrow 10am", time: "1 hour ago", unread: true },
-  { id: 3, icon: CalendarDays, color: "bg-green-100 text-green-600 dark:bg-green-900/40 dark:text-green-400", text: "Reminder: Sprint Planning in 30 minutes", time: "2 hours ago", unread: true },
-  { id: 4, icon: UserPlus, color: "bg-purple-100 text-purple-600 dark:bg-purple-900/40 dark:text-purple-400", text: "Priya Kapoor accepted your contact invite", time: "Yesterday", unread: false },
-];
+type ConversationNotification = {
+  id: number;
+  name: string;
+  unreadCount?: number | null;
+  lastMessage?: string | null;
+  lastMessageAt?: string | null;
+};
+
+type CalendarNotification = {
+  id: number;
+  title: string;
+  startAt: string;
+};
+
+type FileNotification = {
+  id: number;
+  name: string;
+  modifiedAt: string;
+};
 
 const SHORTCUTS = [
   { keys: ["⌘", "K"], label: "Search / Command palette" },
@@ -74,19 +87,77 @@ export function TopBar({ sidebarCollapsed }: TopBarProps) {
   const [location, navigate] = useLocation();
   const title = pageTitles[location] || "CloudSpace";
   const [cmdOpen, setCmdOpen] = useState(false);
-  const [badgeCount, setBadgeCount] = useState(3);
-  const [notifications, setNotifications] = useState(MOCK_NOTIFICATIONS);
+  const [dismissedNotificationIds, setDismissedNotificationIds] = useState<number[]>([]);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const { data: userData } = useQuery({
     queryKey: ["/api/user"],
     queryFn: () => fetchJson<{ data: { name?: string; email?: string } }>("/api/user"),
   });
+  const { data: conversationsData } = useQuery({
+    queryKey: ["/api/conversations"],
+    queryFn: () => fetchJson<{ data: ConversationNotification[] }>("/api/conversations"),
+  });
+  const { data: eventsData } = useQuery({
+    queryKey: ["/api/events"],
+    queryFn: () => fetchJson<{ data: CalendarNotification[] }>("/api/events"),
+  });
+  const { data: filesData } = useQuery({
+    queryKey: ["/api/files", "/"],
+    queryFn: () => fetchJson<{ data: FileNotification[] }>("/api/files?path=%2F"),
+  });
   const userName = userData?.data?.name || "User";
   const userEmail = userData?.data?.email || "";
 
+  const liveNotifications = useMemo(() => {
+    const conversationNotifications = (conversationsData?.data || [])
+      .filter((conversation) => (conversation.unreadCount || 0) > 0)
+      .map((conversation) => ({
+        id: conversation.id,
+        icon: MessageSquare,
+        color: "bg-indigo-100 text-indigo-600 dark:bg-indigo-900/40 dark:text-indigo-400",
+        text: `${conversation.unreadCount} unread in ${conversation.name}${conversation.lastMessage ? `: ${conversation.lastMessage}` : ""}`,
+        time: conversation.lastMessageAt ? new Date(conversation.lastMessageAt).toLocaleString() : "Just now",
+        unread: true,
+      }));
+
+    const eventNotifications = (eventsData?.data || [])
+      .slice()
+      .sort((a, b) => a.startAt.localeCompare(b.startAt))
+      .slice(0, 3)
+      .map((event) => ({
+        id: 100000 + event.id,
+        icon: CalendarDays,
+        color: "bg-green-100 text-green-600 dark:bg-green-900/40 dark:text-green-400",
+        text: `Upcoming: ${event.title}`,
+        time: new Date(event.startAt).toLocaleString(),
+        unread: false,
+      }));
+
+    const fileNotifications = (filesData?.data || [])
+      .filter((file) => file.modifiedAt)
+      .slice()
+      .sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt))
+      .slice(0, 3)
+      .map((file) => ({
+        id: 200000 + file.id,
+        icon: FileUp,
+        color: "bg-blue-100 text-blue-600 dark:bg-blue-900/40 dark:text-blue-400",
+        text: `Recently updated: ${file.name}`,
+        time: new Date(file.modifiedAt).toLocaleString(),
+        unread: false,
+      }));
+
+    return [...conversationNotifications, ...eventNotifications, ...fileNotifications]
+      .filter((notification) => !dismissedNotificationIds.includes(notification.id))
+      .slice(0, 8);
+  }, [conversationsData?.data, dismissedNotificationIds, eventsData?.data, filesData?.data]);
+
+  const badgeCount = liveNotifications.filter((notification) => notification.unread).length;
+
   const markAllRead = () => {
-    setBadgeCount(0);
-    setNotifications((prev) => prev.map((n) => ({ ...n, unread: false })));
+    setDismissedNotificationIds((current) => [
+      ...new Set([...current, ...liveNotifications.map((notification) => notification.id)]),
+    ]);
   };
 
   const handleSignOut = async () => {
@@ -149,7 +220,11 @@ export function TopBar({ sidebarCollapsed }: TopBarProps) {
               </button>
             </div>
             <div className="max-h-80 overflow-y-auto">
-              {notifications.map((n) => {
+              {liveNotifications.length === 0 ? (
+                <div className="px-4 py-6 text-center text-sm text-muted-foreground">
+                  No new notifications
+                </div>
+              ) : liveNotifications.map((n) => {
                 const Icon = n.icon;
                 return (
                   <div

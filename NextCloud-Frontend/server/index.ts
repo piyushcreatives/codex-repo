@@ -1,20 +1,31 @@
+import "./load-env";
 import express from "express";
+import https from "node:https";
+import fs from "node:fs";
+import path from "node:path";
 import { storage } from "./storage";
 import {
   bootstrapDelegatedSession,
   revokeDelegatedCredential,
 } from "./credential-provider";
+import { establishNextcloudWebSession } from "./nextcloud-web-session";
 import {
+  type CloudMediaFile,
   createFolder,
+  createPublicShareLink,
   deleteFile,
   downloadFile,
   getFile,
   getCurrentUser,
   getDashboardData,
+  listMediaFiles,
   listFiles,
+  searchUsers,
   uploadFile,
 } from "./nextcloud-client";
 import {
+  addConversationParticipant,
+  removeConversationParticipant,
   createBoard,
   createCard,
   createContact,
@@ -39,15 +50,21 @@ import {
   leaveConversation,
   listContacts,
   listConversationMessages,
+  listConversationParticipants,
   listConversations,
   listEmails,
   listEvents,
   listNotes,
   listBoards,
+  getTalkSignalingSettings,
+  joinNativeTalkCall,
+  leaveNativeTalkCall,
+  markConversationParticipantActive,
   markConversationRead,
   sendConversationMessage,
   setConversationModerator,
   setConversationMute,
+  updateNativeTalkCallFlags,
   updateCard,
   updateContact,
   updateEmail,
@@ -71,20 +88,176 @@ type ConversationCallState = {
   conversationId: number;
   type: "voice" | "video" | "screen";
   initiatorName: string;
+  initiatorUsername: string;
   active: boolean;
-  acceptedBy: string[];
-  declinedBy: string[];
   isScreenSharing: boolean;
   startedAt: string;
   updatedAt: string;
-  offer?: { type: string; sdp?: string };
-  offerFrom?: string;
-  answer?: { type: string; sdp?: string };
-  answerFrom?: string;
-  iceCandidates: Array<{ id: string; from: string; candidate: { candidate?: string; sdpMid?: string | null; sdpMLineIndex?: number | null; usernameFragment?: string | null } }>;
+  participants: Array<{
+    username: string;
+    displayName: string;
+    status: "ringing" | "joined" | "declined" | "left";
+    joinedAt: string | null;
+  }>;
+  signals: Array<{
+    id: string;
+    kind: "offer" | "answer" | "ice";
+    from: string;
+    to: string;
+    createdAt: string;
+    payload: {
+      type?: string;
+      sdp?: string;
+      candidate?: string;
+      sdpMid?: string | null;
+      sdpMLineIndex?: number | null;
+      usernameFragment?: string | null;
+    };
+  }>;
+  nativeSessionId?: string | null;
+  nativeAvailable: boolean;
+  nativeSignalingMode: string;
+  iceServers: Array<{ urls: string | string[]; username?: string; credential?: string }>;
 };
 
 const conversationCalls = new Map<number, ConversationCallState>();
+
+// ——— In-memory typing indicator store ———
+// Maps conversationId -> Map<username, { displayName, expiresAt }>
+const typingIndicators = new Map<number, Map<string, { displayName: string; expiresAt: number }>>();
+
+function setTyping(conversationId: number, username: string, displayName: string) {
+  if (!typingIndicators.has(conversationId)) {
+    typingIndicators.set(conversationId, new Map());
+  }
+  // Typing expires after 5 seconds
+  typingIndicators.get(conversationId)!.set(username, {
+    displayName,
+    expiresAt: Date.now() + 5000,
+  });
+}
+
+function getTypingUsers(conversationId: number, excludeUsername?: string): Array<{ username: string; displayName: string }> {
+  const map = typingIndicators.get(conversationId);
+  if (!map) return [];
+  const now = Date.now();
+  const result: Array<{ username: string; displayName: string }> = [];
+  for (const [username, entry] of map) {
+    if (entry.expiresAt < now) {
+      map.delete(username);
+      continue;
+    }
+    if (username !== excludeUsername) {
+      result.push({ username, displayName: entry.displayName });
+    }
+  }
+  return result;
+}
+
+function createCallSignalId() {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function toNativeCallFlags(type: "voice" | "video" | "screen") {
+  const IN_CALL = 1;
+  const AUDIO = 2;
+  const VIDEO = 4;
+
+  if (type === "voice") {
+    return IN_CALL | AUDIO;
+  }
+
+  return IN_CALL | AUDIO | VIDEO;
+}
+
+import { createHmac } from "node:crypto";
+
+const TURN_URL = process.env.TURN_SERVER_URL || "";
+const TURN_SECRET = process.env.TURN_SECRET || "";
+
+/** Generate time-limited TURN REST API credentials (RFC 7635 / coturn --use-auth-secret) */
+function generateTurnCredentials(username: string) {
+  if (!TURN_URL || !TURN_SECRET) return null;
+  // Credential expires in 24 hours
+  const expiry = Math.floor(Date.now() / 1000) + 86400;
+  const turnUsername = `${expiry}:${username}`;
+  const turnCredential = createHmac("sha1", TURN_SECRET).update(turnUsername).digest("base64");
+  return {
+    urls: [TURN_URL, TURN_URL.replace("turn:", "turns:")].filter(Boolean),
+    username: turnUsername,
+    credential: turnCredential,
+  };
+}
+
+function buildFallbackIceServers(username = "cloudspace") {
+  const servers: Array<{ urls: string | string[]; username?: string; credential?: string }> = [
+    { urls: "stun:stun.l.google.com:19302" },
+  ];
+  const turnCreds = generateTurnCredentials(username);
+  if (turnCreds) servers.push(turnCreds);
+  return servers;
+}
+
+function toIceServers(settings: Awaited<ReturnType<typeof getTalkSignalingSettings>>, username = "cloudspace") {
+  if (!settings) return buildFallbackIceServers(username);
+  const combined = [...settings.stunServers, ...settings.turnServers].filter(
+    (server) => Array.isArray(server.urls) ? server.urls.length > 0 : Boolean(server.urls),
+  );
+  return combined.length > 0 ? combined : buildFallbackIceServers(username);
+}
+
+function dedupeSignals(signals: ConversationCallState["signals"]) {
+  return signals.slice(-500);
+}
+
+async function syncConversationCallParticipants(
+  session: NonNullable<ReturnType<typeof getNextcloudSession>>,
+  call: ConversationCallState,
+) {
+  const records = await listConversationParticipants(session, call.conversationId);
+  const nextParticipants = new Map(
+    call.participants.map((participant) => [participant.username, participant]),
+  );
+
+  for (const record of records) {
+    if (record.actorType !== "users") continue;
+    const existing = nextParticipants.get(record.actorId);
+    // IMPORTANT: Once the adapter marks a user as "left" or "declined",
+    // never override back to "joined" from Nextcloud session data.
+    // Nextcloud sessions persist after users leave the custom call.
+    const adapterSaysGone = existing?.status === "left" || existing?.status === "declined";
+    const status = adapterSaysGone
+      ? existing.status
+      : record.sessionIds.length > 0
+        ? "joined"
+        : existing?.status === "joined"
+          ? "joined"
+          : record.actorId === call.initiatorUsername
+            ? "joined"
+            : "ringing";
+    if (existing) {
+      nextParticipants.set(record.actorId, {
+        ...existing,
+        displayName: record.displayName || existing.displayName,
+        status,
+        joinedAt: status === "joined" ? existing.joinedAt || call.startedAt : null,
+      });
+      continue;
+    }
+
+    nextParticipants.set(record.actorId, {
+      username: record.actorId,
+      displayName: record.displayName || record.actorId,
+      status,
+      joinedAt: status === "joined" ? call.startedAt : null,
+    });
+  }
+
+  call.participants = Array.from(nextParticipants.values());
+  call.updatedAt = new Date().toISOString();
+  conversationCalls.set(call.conversationId, call);
+  return call;
+}
 
 function requireNextcloudSession(req: express.Request, res: express.Response) {
   const session = getNextcloudSession(req);
@@ -130,7 +303,8 @@ function blockMockRoutes(
   });
 }
 
-app.use(/^\/api\/(activity|activities)(?:\/.*)?$/, blockMockRoutes);
+// Activity routes use local storage — no longer blocked since the Nextcloud activity app is installed
+// app.use(/^\/api\/(activity|activities)(?:\/.*)?$/, blockMockRoutes);
 
 // Auth
 app.post("/api/auth/login", async (req, res) => {
@@ -141,7 +315,11 @@ app.post("/api/auth/login", async (req, res) => {
 
   try {
     const { session, user } = await bootstrapDelegatedSession(email, password);
-    createNextcloudSession(res, session);
+    const webSession = await establishNextcloudWebSession(user.username, password).catch(() => undefined);
+    createNextcloudSession(res, {
+      ...session,
+      webSession,
+    });
     res.json({ ok: true, user });
   } catch {
     res.status(401).json({ ok: false, message: "Invalid Nextcloud credentials." });
@@ -246,6 +424,63 @@ app.get("/api/files", async (req, res) => {
   }
 });
 
+// Simple file download by path (used by Talk attachment bubbles) — must be before :id route
+app.get("/api/files/download", async (req, res) => {
+  const session = requireNextcloudSession(req, res);
+  if (!session) return;
+
+  const cloudPath = typeof req.query.path === "string" ? req.query.path : "";
+  if (!cloudPath) {
+    return res.status(400).json({ error: "File path is required." });
+  }
+
+  try {
+    const file = await downloadFile(session, cloudPath);
+    res.setHeader("Content-Type", file.contentType);
+    res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(file.name)}"`);
+    res.setHeader("Cache-Control", "public, max-age=3600");
+    res.send(file.buffer);
+  } catch {
+    res.status(502).json({ error: "Unable to download file from Nextcloud." });
+  }
+});
+
+// Proxy endpoint for downloading files via public share token — works for any
+// authenticated user, not just the file owner.  The client sends the Nextcloud
+// share URL; we extract the token and fetch the file from Nextcloud on the
+// server side, avoiding CORS and mixed-content issues.
+app.get("/api/files/share-download", async (req, res) => {
+  const session = requireNextcloudSession(req, res);
+  if (!session) return;
+
+  const shareUrl = typeof req.query.url === "string" ? req.query.url : "";
+  // Extract the share token from URLs like http://host/s/TOKEN or http://host/index.php/s/TOKEN
+  const tokenMatch = shareUrl.match(/\/s\/([A-Za-z0-9]+)/);
+  if (!tokenMatch) {
+    return res.status(400).json({ error: "Invalid share URL." });
+  }
+  const token = tokenMatch[1];
+  const NC_BASE_URL = process.env.NC_BASE_URL || "http://localhost:8090";
+
+  try {
+    const downloadRes = await fetch(`${NC_BASE_URL}/s/${token}/download`, {
+      redirect: "follow",
+    });
+    if (!downloadRes.ok) {
+      return res.status(downloadRes.status).json({ error: "Share download failed." });
+    }
+    const contentType = downloadRes.headers.get("content-type") || "application/octet-stream";
+    const disposition = downloadRes.headers.get("content-disposition");
+    res.setHeader("Content-Type", contentType);
+    if (disposition) res.setHeader("Content-Disposition", disposition);
+    res.setHeader("Cache-Control", "public, max-age=3600");
+    const buffer = Buffer.from(await downloadRes.arrayBuffer());
+    res.send(buffer);
+  } catch {
+    res.status(502).json({ error: "Unable to download shared file from Nextcloud." });
+  }
+});
+
 app.get("/api/files/:id", async (req, res) => {
   const session = requireNextcloudSession(req, res);
   if (!session) return;
@@ -269,6 +504,35 @@ app.get("/api/files/:id", async (req, res) => {
     res.json({ data: file });
   } catch {
     res.status(502).json({ error: "Unable to load file from Nextcloud." });
+  }
+});
+
+app.get("/api/media", async (req, res) => {
+  const session = requireNextcloudSession(req, res);
+  if (!session) return;
+
+  const rootPath = typeof req.query.path === "string" ? req.query.path : "/";
+  try {
+    const media = await listMediaFiles(session, { rootPath, maxDepth: 5, limit: 400 });
+    res.json({ data: media satisfies CloudMediaFile[] });
+  } catch {
+    res.status(502).json({ error: "Unable to load media from Nextcloud." });
+  }
+});
+
+app.get("/api/users/search", async (req, res) => {
+  const session = requireNextcloudSession(req, res);
+  if (!session) return;
+
+  const query = typeof req.query.query === "string" ? req.query.query.trim() : "";
+
+  try {
+    const users = await searchUsers(session, query);
+    res.json({
+      data: users.filter((user) => user.username !== session.username),
+    });
+  } catch {
+    res.status(502).json({ error: "Unable to load Nextcloud users." });
   }
 });
 
@@ -296,7 +560,12 @@ app.post("/api/files", express.raw({ type: "application/octet-stream", limit: "1
 
     try {
       const file = await uploadFile(session, uploadParentPath, fileName, rawBody, uploadContentType);
-      res.json({ data: file });
+      // For Talk uploads, create a public share link so other users can download
+      let shareLink: string | null = null;
+      if (uploadParentPath.startsWith("/Talk Uploads")) {
+        shareLink = await createPublicShareLink(session, file.path).catch(() => null);
+      }
+      res.json({ data: { ...file, shareLink } });
     } catch {
       res.status(502).json({ error: "Unable to upload file to Nextcloud." });
     }
@@ -371,16 +640,75 @@ app.get("/api/conversations/:id", async (req, res) => {
     res.status(502).json({ error: "Unable to load conversation from Nextcloud Talk." });
   }
 });
+app.get("/api/conversations/:id/participants", async (req, res) => {
+  const session = requireNextcloudSession(req, res);
+  if (!session) return;
+  if (!(await requireCapability(session, res, "talk"))) return;
+
+  try {
+    res.json({ data: await listConversationParticipants(session, Number(req.params.id)) });
+  } catch {
+    res.status(502).json({ error: "Unable to load conversation participants from Nextcloud Talk." });
+  }
+});
+
+// ——— Typing indicators ———
+app.post("/api/conversations/:id/typing", (req, res) => {
+  const session = getNextcloudSession(req);
+  if (!session) return res.status(401).json({ error: "Not authenticated." });
+
+  const conversationId = Number(req.params.id);
+  const username = session.username;
+  const displayName = session.displayNameOverride || session.username;
+  setTyping(conversationId, username, displayName);
+  res.json({ ok: true });
+});
+
+app.get("/api/conversations/:id/typing", (req, res) => {
+  const session = getNextcloudSession(req);
+  if (!session) return res.status(401).json({ error: "Not authenticated." });
+
+  const conversationId = Number(req.params.id);
+  const typingUsers = getTypingUsers(conversationId, session.username);
+  res.json({ data: typingUsers });
+});
+
 app.post("/api/conversations", async (req, res) => {
   const session = requireNextcloudSession(req, res);
   if (!session) return;
   if (!(await requireCapability(session, res, "talk"))) return;
 
   try {
-    const conversation = await createConversation(session, req.body?.name || "New conversation", req.body?.type || "group");
+    const memberUsernames = Array.isArray(req.body?.memberUsernames)
+      ? req.body.memberUsernames.filter((value: unknown): value is string => typeof value === "string")
+      : [];
+    const conversation = await createConversation(session, {
+      name: req.body?.name || "New conversation",
+      type: req.body?.type || "group",
+      inviteUsername: typeof req.body?.inviteUsername === "string" ? req.body.inviteUsername : undefined,
+      memberUsernames,
+    });
     res.json({ data: conversation });
   } catch {
     res.status(502).json({ error: "Unable to create conversation in Nextcloud Talk." });
+  }
+});
+app.post("/api/conversations/:id/participants", async (req, res) => {
+  const session = requireNextcloudSession(req, res);
+  if (!session) return;
+  if (!(await requireCapability(session, res, "talk"))) return;
+
+  const username = typeof req.body?.username === "string" ? req.body.username.trim() : "";
+  if (!username) {
+    return res.status(400).json({ error: "Participant username is required." });
+  }
+
+  try {
+    const participants = await addConversationParticipant(session, Number(req.params.id), username);
+    if (!participants) return res.status(404).json({ error: "Conversation not found." });
+    res.json({ data: participants });
+  } catch {
+    res.status(502).json({ error: "Unable to add participant to Nextcloud Talk conversation." });
   }
 });
 app.patch("/api/conversations/:id/read", async (req, res) => {
@@ -433,6 +761,18 @@ app.delete("/api/conversations/:id/members/me", async (req, res) => {
     res.status(502).json({ error: "Unable to leave conversation." });
   }
 });
+app.delete("/api/conversations/:id/members/:attendeeId", async (req, res) => {
+  const session = requireNextcloudSession(req, res);
+  if (!session) return;
+  if (!(await requireCapability(session, res, "talk"))) return;
+
+  try {
+    const result = await removeConversationParticipant(session, Number(req.params.id), Number(req.params.attendeeId));
+    res.json({ data: { success: true, participants: result } });
+  } catch {
+    res.status(502).json({ error: "Unable to remove member from conversation." });
+  }
+});
 app.delete("/api/conversations/:id", async (req, res) => {
   const session = requireNextcloudSession(req, res);
   if (!session) return;
@@ -472,99 +812,265 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
 });
 
 // Call signaling
-app.get("/api/conversations/:id/call", (req, res) => {
+app.get("/api/conversations/:id/call", async (req, res) => {
+  const session = requireNextcloudSession(req, res);
+  if (!session) return;
+  if (!(await requireCapability(session, res, "talk"))) return;
+
   const conversationId = Number(req.params.id);
-  const call = conversationCalls.get(conversationId) || null;
-  res.json({ data: call });
+  const existing = conversationCalls.get(conversationId) || null;
+  if (!existing) {
+    res.json({ data: null });
+    return;
+  }
+
+  // Clean up stale calls — if no one is joined, remove and return null
+  const stillJoined = existing.participants.filter((p) => p.status === "joined");
+  if (stillJoined.length === 0) {
+    conversationCalls.delete(conversationId);
+    res.json({ data: null });
+    return;
+  }
+
+  try {
+    const call = await syncConversationCallParticipants(session, existing);
+
+    // Re-check after sync — native Nextcloud may have cleared participants
+    const stillJoinedAfterSync = call.participants.filter((p) => p.status === "joined");
+    if (stillJoinedAfterSync.length === 0) {
+      conversationCalls.delete(conversationId);
+      res.json({ data: null });
+      return;
+    }
+
+    const signaling = await getTalkSignalingSettings(session, conversationId).catch(() => null);
+    call.nativeSignalingMode = signaling?.mode || "internal";
+    call.iceServers = toIceServers(signaling, session.username);
+    res.json({ data: call });
+  } catch {
+    res.status(502).json({ error: "Unable to load call state from Nextcloud Talk." });
+  }
 });
 
-app.post("/api/conversations/:id/call/start", (req, res) => {
+app.post("/api/conversations/:id/call/start", async (req, res) => {
+  const session = requireNextcloudSession(req, res);
+  if (!session) return;
+  if (!(await requireCapability(session, res, "talk"))) return;
+
   const conversationId = Number(req.params.id);
   const now = new Date().toISOString();
   const type = req.body.type as "voice" | "video" | "screen";
-  const initiatorName = (req.body.initiatorName as string) || "User";
+  const initiatorName = (req.body.initiatorName as string) || session.username;
 
-  const next: ConversationCallState = {
-    conversationId,
-    type,
-    initiatorName,
-    active: true,
-    acceptedBy: [initiatorName],
-    declinedBy: [],
-    isScreenSharing: type === "screen",
-    startedAt: now,
-    updatedAt: now,
-    iceCandidates: [],
-  };
-  conversationCalls.set(conversationId, next);
-  res.json({ data: next });
-});
-
-app.post("/api/conversations/:id/call/accept", (req, res) => {
-  const conversationId = Number(req.params.id);
-  const existing = conversationCalls.get(conversationId);
-  if (!existing || !existing.active) return res.status(404).json({ error: "No active call" });
-
-  const userName = (req.body.userName as string) || "User";
-  if (!existing.acceptedBy.includes(userName)) {
-    existing.acceptedBy.push(userName);
+  try {
+    await markConversationParticipantActive(session, conversationId).catch(() => false);
+    const conversationParticipants = await listConversationParticipants(session, conversationId);
+    const userParticipants = conversationParticipants.filter((participant) => participant.actorType === "users");
+    if (userParticipants.length < 2) {
+      return res.status(409).json({ error: "This conversation does not support calls." });
+    }
+    const signaling = await getTalkSignalingSettings(session, conversationId).catch(() => null);
+    const nativeJoin = await joinNativeTalkCall(session, conversationId, toNativeCallFlags(type)).catch(() => null);
+    if (!nativeJoin) {
+      return res.status(502).json({ error: "Unable to join the native Nextcloud Talk call." });
+    }
+    const next: ConversationCallState = {
+      conversationId,
+      type,
+      initiatorName,
+      initiatorUsername: session.username,
+      active: true,
+      isScreenSharing: type === "screen",
+      startedAt: now,
+      updatedAt: now,
+      participants: userParticipants
+        .map((participant) => ({
+          username: participant.actorId,
+          displayName: participant.displayName || participant.actorId,
+          // Only the initiator starts as "joined" — everyone else starts as
+          // "ringing" until they explicitly accept the call.  Previously we
+          // checked sessionIds.length > 0 which caused users with an active
+          // Nextcloud web session to appear "joined" immediately, preventing
+          // the ringing timeout from ever firing.
+          status:
+            participant.actorId === session.username
+              ? "joined"
+              : "ringing",
+          joinedAt:
+            participant.actorId === session.username
+              ? now
+              : null,
+        })),
+      signals: [],
+      nativeSessionId: nativeJoin?.sessionId ?? null,
+      nativeAvailable: Boolean(nativeJoin),
+      nativeSignalingMode: signaling?.mode || "internal",
+      iceServers: toIceServers(signaling),
+    };
+    conversationCalls.set(conversationId, next);
+    res.json({ data: next });
+  } catch {
+    res.status(502).json({ error: "Unable to start call for this conversation." });
   }
-  existing.updatedAt = new Date().toISOString();
-  conversationCalls.set(conversationId, existing);
-  res.json({ data: existing });
 });
 
-app.post("/api/conversations/:id/call/decline", (req, res) => {
+app.post("/api/conversations/:id/call/accept", async (req, res) => {
+  const session = requireNextcloudSession(req, res);
+  if (!session) return;
+  if (!(await requireCapability(session, res, "talk"))) return;
+
   const conversationId = Number(req.params.id);
   const existing = conversationCalls.get(conversationId);
   if (!existing || !existing.active) return res.status(404).json({ error: "No active call" });
 
-  const userName = (req.body.userName as string) || "User";
-  if (!existing.declinedBy.includes(userName)) {
-    existing.declinedBy.push(userName);
+  await markConversationParticipantActive(session, conversationId).catch(() => false);
+  const nativeJoin = await joinNativeTalkCall(session, conversationId, toNativeCallFlags(existing.type)).catch(() => null);
+  if (!nativeJoin) {
+    return res.status(502).json({ error: "Unable to join the native Nextcloud Talk call." });
   }
-  existing.updatedAt = new Date().toISOString();
-  conversationCalls.set(conversationId, existing);
-  res.json({ data: existing });
+  const signaling = await getTalkSignalingSettings(session, conversationId).catch(() => null);
+  const current = await syncConversationCallParticipants(session, existing);
+  current.participants = current.participants.map((participant) =>
+    participant.username === session.username
+      ? {
+          ...participant,
+          status: "joined",
+          joinedAt: participant.joinedAt || new Date().toISOString(),
+        }
+      : participant,
+  );
+  current.updatedAt = new Date().toISOString();
+  current.nativeSessionId = nativeJoin?.sessionId ?? current.nativeSessionId ?? null;
+  current.nativeAvailable = current.nativeAvailable || Boolean(nativeJoin);
+  current.nativeSignalingMode = signaling?.mode || current.nativeSignalingMode || "internal";
+  current.iceServers = toIceServers(signaling);
+  conversationCalls.set(conversationId, current);
+  res.json({ data: current });
 });
 
-app.patch("/api/conversations/:id/call", (req, res) => {
+app.post("/api/conversations/:id/call/decline", async (req, res) => {
+  const session = requireNextcloudSession(req, res);
+  if (!session) return;
+  if (!(await requireCapability(session, res, "talk"))) return;
+
   const conversationId = Number(req.params.id);
   const existing = conversationCalls.get(conversationId);
   if (!existing || !existing.active) return res.status(404).json({ error: "No active call" });
+
+  const current = await syncConversationCallParticipants(session, existing);
+  current.participants = current.participants.map((participant) =>
+    participant.username === session.username
+      ? {
+          ...participant,
+          status: "declined",
+          joinedAt: null,
+        }
+      : participant,
+  );
+  current.updatedAt = new Date().toISOString();
+  conversationCalls.set(conversationId, current);
+  res.json({ data: current });
+});
+
+app.patch("/api/conversations/:id/call", async (req, res) => {
+  const session = requireNextcloudSession(req, res);
+  if (!session) return;
+  if (!(await requireCapability(session, res, "talk"))) return;
+
+  const conversationId = Number(req.params.id);
+  const existing = conversationCalls.get(conversationId);
+  if (!existing || !existing.active) return res.status(404).json({ error: "No active call" });
+
+  const current = await syncConversationCallParticipants(session, existing);
 
   if (typeof req.body.isScreenSharing === "boolean") {
-    existing.isScreenSharing = req.body.isScreenSharing;
-  }
-  if (req.body.offer) {
-    existing.offer = req.body.offer as { type: string; sdp?: string };
-    existing.offerFrom = (req.body.offerFrom as string) || "User";
-    existing.answer = undefined;
-    existing.answerFrom = undefined;
-    existing.iceCandidates = [];
-  }
-  if (req.body.answer) {
-    existing.answer = req.body.answer as { type: string; sdp?: string };
-    existing.answerFrom = (req.body.answerFrom as string) || "User";
-  }
-  if (req.body.iceCandidate && req.body.iceFrom) {
-    existing.iceCandidates.push({
-      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      from: req.body.iceFrom as string,
-      candidate: req.body.iceCandidate as { candidate?: string; sdpMid?: string | null; sdpMLineIndex?: number | null; usernameFragment?: string | null },
-    });
-    if (existing.iceCandidates.length > 200) {
-      existing.iceCandidates = existing.iceCandidates.slice(-200);
+    current.isScreenSharing = req.body.isScreenSharing;
+    if (current.nativeAvailable) {
+      await updateNativeTalkCallFlags(
+        session,
+        conversationId,
+        toNativeCallFlags(req.body.isScreenSharing ? "screen" : current.type),
+      ).catch(() => null);
     }
   }
-  existing.updatedAt = new Date().toISOString();
-  conversationCalls.set(conversationId, existing);
-  res.json({ data: existing });
+
+  const signalTargets = new Set(
+    current.participants
+      .filter((participant) => participant.username !== session.username)
+      .map((participant) => participant.username),
+  );
+
+  if (req.body.offer && typeof req.body.offerTo === "string" && signalTargets.has(req.body.offerTo)) {
+    current.signals.push({
+      id: createCallSignalId(),
+      kind: "offer",
+      from: session.username,
+      to: req.body.offerTo,
+      createdAt: new Date().toISOString(),
+      payload: req.body.offer as { type?: string; sdp?: string },
+    });
+  }
+
+  if (req.body.answer && typeof req.body.answerTo === "string" && signalTargets.has(req.body.answerTo)) {
+    current.signals.push({
+      id: createCallSignalId(),
+      kind: "answer",
+      from: session.username,
+      to: req.body.answerTo,
+      createdAt: new Date().toISOString(),
+      payload: req.body.answer as { type?: string; sdp?: string },
+    });
+  }
+
+  if (req.body.iceCandidate && typeof req.body.iceTo === "string" && signalTargets.has(req.body.iceTo)) {
+    current.signals.push({
+      id: createCallSignalId(),
+      kind: "ice",
+      from: session.username,
+      to: req.body.iceTo,
+      createdAt: new Date().toISOString(),
+      payload: req.body.iceCandidate as {
+        candidate?: string;
+        sdpMid?: string | null;
+        sdpMLineIndex?: number | null;
+        usernameFragment?: string | null;
+      },
+    });
+  }
+
+  current.signals = dedupeSignals(current.signals);
+  current.updatedAt = new Date().toISOString();
+  conversationCalls.set(conversationId, current);
+  res.json({ data: current });
 });
 
-app.post("/api/conversations/:id/call/end", (req, res) => {
+app.post("/api/conversations/:id/call/end", async (req, res) => {
+  const session = requireNextcloudSession(req, res);
+  if (!session) return;
+  if (!(await requireCapability(session, res, "talk"))) return;
+
   const conversationId = Number(req.params.id);
-  conversationCalls.delete(conversationId);
+  await leaveNativeTalkCall(session, conversationId).catch(() => false);
+
+  const existing = conversationCalls.get(conversationId);
+  if (existing) {
+    // Mark this user as "left" instead of deleting the entire call
+    existing.participants = existing.participants.map((p) =>
+      p.username === session.username
+        ? { ...p, status: "left" as const, joinedAt: null }
+        : p
+    );
+    existing.updatedAt = new Date().toISOString();
+
+    // Only delete the call if no one else is still joined
+    const stillJoined = existing.participants.filter((p) => p.status === "joined");
+    if (stillJoined.length === 0) {
+      conversationCalls.delete(conversationId);
+    } else {
+      conversationCalls.set(conversationId, existing);
+    }
+  }
+
   res.json({ data: { success: true } });
 });
 
@@ -935,8 +1441,35 @@ app.post("/api/activity/read-all", (_req, res) => {
 app.get("/api/activities", (_req, res) => res.json({ data: storage.getActivities() }));
 
 const PORT = Number(process.env.PORT || 5000);
-app.listen(PORT, () => {
-  console.log(`CloudSpace API server running on http://localhost:${PORT}`);
-  console.log(`Nextcloud upstream: ${process.env.NC_BASE_URL || "http://localhost:8090"}`);
-  console.log(`Mock-backed endpoints: ${ALLOW_MOCK_SERVICES ? "enabled" : "disabled"}`);
-});
+
+// Try HTTPS first (needed for WebRTC camera/mic on LAN), fall back to HTTP
+const certsDir = path.resolve(import.meta.dirname || ".", "certs");
+const certPath = path.join(certsDir, "cert.pem");
+const keyPath = path.join(certsDir, "key.pem");
+
+// Also check project root certs/
+const rootCertsDir = path.resolve(import.meta.dirname || ".", "..", "certs");
+const rootCertPath = path.join(rootCertsDir, "cert.pem");
+const rootKeyPath = path.join(rootCertsDir, "key.pem");
+
+const finalCert = fs.existsSync(certPath) ? certPath : fs.existsSync(rootCertPath) ? rootCertPath : null;
+const finalKey = fs.existsSync(keyPath) ? keyPath : fs.existsSync(rootKeyPath) ? rootKeyPath : null;
+
+if (finalCert && finalKey) {
+  const sslOptions = {
+    key: fs.readFileSync(finalKey),
+    cert: fs.readFileSync(finalCert),
+  };
+  https.createServer(sslOptions, app).listen(PORT, "0.0.0.0", () => {
+    console.log(`CloudSpace API server running on https://0.0.0.0:${PORT}`);
+    console.log(`Nextcloud upstream: ${process.env.NC_BASE_URL || "http://localhost:8090"}`);
+    console.log(`Mock-backed endpoints: ${ALLOW_MOCK_SERVICES ? "enabled" : "disabled"}`);
+  });
+} else {
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`CloudSpace API server running on http://0.0.0.0:${PORT}`);
+    console.log(`Nextcloud upstream: ${process.env.NC_BASE_URL || "http://localhost:8090"}`);
+    console.log(`Mock-backed endpoints: ${ALLOW_MOCK_SERVICES ? "enabled" : "disabled"}`);
+    console.log(`WARNING: No SSL certs found. WebRTC calls will not work on LAN.`);
+  });
+}

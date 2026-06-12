@@ -1,6 +1,21 @@
 import { type Page, expect } from "@playwright/test";
+import fs from "fs";
+import path from "path";
 
-export const BASE_URL = `http://localhost:${process.env.VITE_PORT || "5173"}`;
+function readLocalEnvValue(key: string) {
+  try {
+    const envPath = path.join(process.cwd(), ".env");
+    const content = fs.readFileSync(envPath, "utf8");
+    const match = content.match(new RegExp(`^${key}=(.*)$`, "m"));
+    return match?.[1]?.trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+const VITE_HTTPS = process.env.VITE_HTTPS ?? readLocalEnvValue("VITE_HTTPS");
+const BASE_PROTOCOL = VITE_HTTPS === "true" ? "https" : "http";
+export const BASE_URL = `${BASE_PROTOCOL}://localhost:${process.env.VITE_PORT || "5173"}`;
 const E2E_EMAIL = process.env.E2E_EMAIL || "e2e-user";
 const E2E_PASSWORD = process.env.E2E_PASSWORD || "set-e2e-password";
 
@@ -12,6 +27,10 @@ function assertE2ECredentialsConfigured() {
 
 export async function login(page: Page) {
   assertE2ECredentialsConfigured();
+  await loginAs(page, E2E_EMAIL, E2E_PASSWORD);
+}
+
+export async function loginAs(page: Page, emailValue: string, passwordValue: string) {
   await page.goto("/#/");
   await page.waitForLoadState("networkidle");
 
@@ -27,8 +46,8 @@ export async function login(page: Page) {
   const hasLoginForm = await email.isVisible({ timeout: 3000 }).catch(() => false);
 
   if (hasLoginForm) {
-    await email.fill(E2E_EMAIL);
-    await password.fill(E2E_PASSWORD);
+    await email.fill(emailValue);
+    await password.fill(passwordValue);
     await page.getByRole("button", { name: "Sign in" }).click();
     await page.waitForURL(/\/#\/$/);
     await page.waitForLoadState("networkidle");
@@ -37,7 +56,7 @@ export async function login(page: Page) {
   }
 
   await page.request.post("/api/auth/login", {
-    data: { email: E2E_EMAIL, password: E2E_PASSWORD },
+    data: { email: emailValue, password: passwordValue },
   });
   await page.goto("/#/");
   await page.waitForLoadState("networkidle");

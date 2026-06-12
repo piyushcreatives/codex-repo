@@ -64,7 +64,7 @@ function mapAppsToCapabilities(apps: string[], overrides?: Partial<CloudspaceCap
     contacts: installedApps.has("contacts"),
     notes: true,
     mail: installedApps.has("mail"),
-    activity: false,
+    activity: installedApps.has("activity"),
     ...overrides,
   } satisfies CloudspaceCapabilities;
 }
@@ -120,7 +120,7 @@ async function buildSnapshot(headers: HeadersInit, source: CapabilitySnapshot["s
 
   return {
     apps,
-    capabilities: mapAppsToCapabilities(apps, { mail: apps.includes("mail") && mailReady }),
+    capabilities: mapAppsToCapabilities(apps),
     source,
     checkedAt: new Date().toISOString(),
   } satisfies CapabilitySnapshot;

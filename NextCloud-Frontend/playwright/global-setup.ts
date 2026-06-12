@@ -6,6 +6,16 @@ import { fileURLToPath } from "url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AUTH_DIR = path.join(__dirname, ".auth");
 const STORAGE_STATE_PATH = path.join(AUTH_DIR, "session.json");
+function readLocalEnvValue(key: string) {
+  try {
+    const envPath = path.join(process.cwd(), ".env");
+    const content = fs.readFileSync(envPath, "utf8");
+    const match = content.match(new RegExp(`^${key}=(.*)$`, "m"));
+    return match?.[1]?.trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
 const API_BASE_URL = process.env.VITE_API_PROXY_TARGET || `http://localhost:${process.env.PORT || "5000"}`;
 const E2E_EMAIL = process.env.E2E_EMAIL || "e2e-user";
 const E2E_PASSWORD = process.env.E2E_PASSWORD || "set-e2e-password";
@@ -24,7 +34,9 @@ async function globalSetup() {
 
   // Log in via the API to establish a session cookie
   const browser = await chromium.launch();
-  const context = await browser.newContext();
+  const context = await browser.newContext({
+    ignoreHTTPSErrors: (process.env.VITE_HTTPS ?? readLocalEnvValue("VITE_HTTPS")) === "true",
+  });
   const page = await context.newPage();
 
   // POST login to get session cookie

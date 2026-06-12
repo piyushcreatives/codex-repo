@@ -86,7 +86,7 @@ export default function Login() {
               <Input
                 id="email"
                 type="text"
-                placeholder="cloudqa1 or you@cloudspace.home"
+                placeholder="username or email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 required

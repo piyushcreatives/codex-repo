@@ -232,7 +232,7 @@ export default function Mail() {
     queryFn: () => fetchJson<{ data: { name?: string; email?: string } }>("/api/user"),
   });
   const currentUserName = currentUserData?.data?.name || "You";
-  const currentUserEmail = currentUserData?.data?.email || "user@cloudspace.home";
+  const currentUserEmail = currentUserData?.data?.email || "";
 
   // Fetch emails for current folder
   const folderToFetch = activeFolder === "starred" ? "inbox" : activeFolder;

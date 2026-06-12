@@ -4,6 +4,14 @@ import type { NextcloudSession } from "./credential-provider";
 import { resolveCurrentUser } from "./credential-provider";
 
 const NC_BASE_URL = process.env.NC_BASE_URL || "http://localhost:8090";
+const SERVICE_USERNAME =
+  process.env.NC_CAPABILITY_USERNAME ||
+  process.env.NC_ADMIN_USER ||
+  "";
+const SERVICE_PASSWORD =
+  process.env.NC_CAPABILITY_PASSWORD ||
+  process.env.NC_ADMIN_PASSWORD ||
+  "";
 
 type DavFile = {
   id: number;
@@ -17,6 +25,17 @@ type DavFile = {
   isFavourite: boolean;
   parentPath: string;
   ownerId: number;
+};
+
+export type NextcloudDirectoryUser = {
+  id: string;
+  username: string;
+  displayName: string;
+  email: string | null;
+};
+
+export type CloudMediaFile = DavFile & {
+  mediaKind: "image" | "video";
 };
 
 function normalizeCloudPath(input: string | undefined) {
@@ -134,8 +153,113 @@ async function nextcloudFetch(session: NextcloudSession, path: string, init?: Re
   });
 }
 
+async function nextcloudJson<T>(session: NextcloudSession, path: string, init?: RequestInit) {
+  const headers = new Headers(init?.headers);
+  headers.set("Authorization", `Basic ${toBasicAuth(session)}`);
+  headers.set("Accept", "application/json");
+  headers.set("OCS-APIRequest", "true");
+
+  const response = await fetch(`${NC_BASE_URL}${path}`, {
+    ...init,
+    headers,
+  });
+
+  if (!response.ok) {
+    throw new Error(`Nextcloud JSON request failed: ${response.status} ${path}`);
+  }
+
+  return response.json() as Promise<T>;
+}
+
+async function nextcloudJsonWithCredentials<T>(
+  username: string,
+  secret: string,
+  path: string,
+  init?: RequestInit,
+) {
+  const headers = new Headers(init?.headers);
+  headers.set("Authorization", `Basic ${Buffer.from(`${username}:${secret}`).toString("base64")}`);
+  headers.set("Accept", "application/json");
+  headers.set("OCS-APIRequest", "true");
+
+  const response = await fetch(`${NC_BASE_URL}${path}`, {
+    ...init,
+    headers,
+  });
+
+  if (!response.ok) {
+    throw new Error(`Nextcloud JSON request failed: ${response.status} ${path}`);
+  }
+
+  return response.json() as Promise<T>;
+}
+
 export async function getCurrentUser(session: NextcloudSession) {
   return resolveCurrentUser(session);
+}
+
+export async function searchUsers(session: NextcloudSession, query = "") {
+  const requestPath = `/ocs/v2.php/cloud/users?format=json&search=${encodeURIComponent(query)}`;
+  const payload = SERVICE_USERNAME && SERVICE_PASSWORD
+    ? await nextcloudJsonWithCredentials<{
+        ocs?: {
+          data?: {
+            users?: string[];
+          };
+        };
+      }>(SERVICE_USERNAME, SERVICE_PASSWORD, requestPath)
+    : await nextcloudJson<{
+        ocs?: {
+          data?: {
+            users?: string[];
+          };
+        };
+      }>(session, requestPath);
+
+  const usernames = payload.ocs?.data?.users || [];
+  const details = await Promise.all(
+    usernames.map(async (username) => {
+      try {
+        const detailPath = `/ocs/v2.php/cloud/users/${encodeURIComponent(username)}?format=json`;
+        const detail = SERVICE_USERNAME && SERVICE_PASSWORD
+          ? await nextcloudJsonWithCredentials<{
+              ocs?: {
+                data?: {
+                  id?: string;
+                  displayname?: string;
+                  email?: string | null;
+                };
+              };
+            }>(SERVICE_USERNAME, SERVICE_PASSWORD, detailPath)
+          : await nextcloudJson<{
+              ocs?: {
+                data?: {
+                  id?: string;
+                  displayname?: string;
+                  email?: string | null;
+                };
+              };
+            }>(session, detailPath);
+
+        const data = detail.ocs?.data;
+        return {
+          id: String(data?.id || username),
+          username,
+          displayName: String(data?.displayname || username),
+          email: data?.email ? String(data.email) : null,
+        } satisfies NextcloudDirectoryUser;
+      } catch {
+        return {
+          id: username,
+          username,
+          displayName: username,
+          email: null,
+        } satisfies NextcloudDirectoryUser;
+      }
+    }),
+  );
+
+  return details.sort((a, b) => a.displayName.localeCompare(b.displayName));
 }
 
 export async function listFiles(session: NextcloudSession, parentPath: string) {
@@ -163,6 +287,54 @@ export async function listFiles(session: NextcloudSession, parentPath: string) {
   }
 
   return parseDavResponses(await response.text(), session.username, parentPath);
+}
+
+function isMediaMime(mimeType: string | null) {
+  if (!mimeType) return false;
+  return mimeType.startsWith("image/") || mimeType.startsWith("video/");
+}
+
+async function collectFilesRecursive(
+  session: NextcloudSession,
+  parentPath: string,
+  depth: number,
+  limit: number,
+  results: DavFile[],
+) {
+  if (depth < 0 || results.length >= limit) return;
+
+  const entries = await listFiles(session, parentPath);
+  for (const entry of entries) {
+    if (entry.type === "file") {
+      results.push(entry);
+      if (results.length >= limit) return;
+      continue;
+    }
+
+    if (entry.type === "folder" && depth > 0) {
+      await collectFilesRecursive(session, entry.path, depth - 1, limit, results);
+      if (results.length >= limit) return;
+    }
+  }
+}
+
+export async function listMediaFiles(
+  session: NextcloudSession,
+  options?: { rootPath?: string; maxDepth?: number; limit?: number },
+) {
+  const rootPath = normalizeCloudPath(options?.rootPath || "/");
+  const maxDepth = options?.maxDepth ?? 4;
+  const limit = options?.limit ?? 300;
+  const allFiles: DavFile[] = [];
+
+  await collectFilesRecursive(session, rootPath, maxDepth, limit, allFiles);
+
+  return allFiles
+    .filter((file) => isMediaMime(file.mimeType))
+    .map((file) => ({
+      ...file,
+      mediaKind: file.mimeType?.startsWith("video/") ? "video" : "image",
+    })) satisfies CloudMediaFile[];
 }
 
 export async function createFolder(session: NextcloudSession, parentPath: string, name: string) {
@@ -244,6 +416,27 @@ export async function downloadFile(session: NextcloudSession, cloudPath: string)
     contentType: response.headers.get("content-type") || file?.mimeType || "application/octet-stream",
     name: file?.name || getBaseName(cloudPath) || "download",
   };
+}
+
+export async function createPublicShareLink(session: NextcloudSession, cloudPath: string): Promise<string | null> {
+  try {
+    const response = await nextcloudJson<{ ocs: { data: { url?: string; token?: string } } }>(
+      session,
+      "/ocs/v2.php/apps/files_sharing/api/v1/shares",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          path: cloudPath,
+          shareType: 3, // 3 = public link
+          permissions: 1, // 1 = read only
+        }),
+      },
+    );
+    return response.ocs?.data?.url || null;
+  } catch {
+    return null;
+  }
 }
 
 export async function deleteFile(session: NextcloudSession, cloudPath: string) {
