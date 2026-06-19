@@ -2,6 +2,7 @@ import { useLocation, Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import {
   LayoutDashboard,
+  Sun,
   FolderOpen,
   MessageSquare,
   CalendarDays,
@@ -29,6 +30,7 @@ const navItems: Array<{
   capability?: keyof Pick<AppCapabilities, "talk" | "calendar" | "notes" | "contacts" | "deck" | "mail" | "activity">;
 }> = [
   { label: "Dashboard", icon: LayoutDashboard, href: "/" },
+  { label: "Today", icon: Sun, href: "/today" },
   { label: "Files", icon: FolderOpen, href: "/files" },
   { label: "Talk", icon: MessageSquare, href: "/talk", capability: "talk" },
   { label: "Calendar", icon: CalendarDays, href: "/calendar", capability: "calendar" },

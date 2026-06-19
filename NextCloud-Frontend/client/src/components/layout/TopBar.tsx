@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import {
   Bell, Search, FileUp, MessageSquare, CalendarDays, UserPlus,
-  User, Palette, Keyboard, LogOut,
+  User, Palette, Keyboard, LogOut, Share2, X,
 } from "lucide-react";
 import { cn, getInitials } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -35,6 +35,7 @@ function showToast(msg: string) {
 
 const pageTitles: Record<string, string> = {
   "/": "Dashboard",
+  "/today": "Today",
   "/files": "Files",
   "/talk": "Talk",
   "/calendar": "Calendar",
@@ -67,15 +68,36 @@ type FileNotification = {
   modifiedAt: string;
 };
 
+type IncomingShareNotification = {
+  id: string;
+  name: string;
+  ownerDisplayName: string;
+  sharedAt: string;
+};
+
+type NotificationItem = { id: number; app: string; subject: string; message: string; datetime: string; link: string | null };
+
+const NOTIF_APP_META: Record<string, { color: string; href: string }> = {
+  spreed: { color: "bg-indigo-100 text-indigo-600 dark:bg-indigo-900/40 dark:text-indigo-400", href: "/talk" },
+  files: { color: "bg-blue-100 text-blue-600 dark:bg-blue-900/40 dark:text-blue-400", href: "/files" },
+  files_sharing: { color: "bg-purple-100 text-purple-600 dark:bg-purple-900/40 dark:text-purple-400", href: "/files" },
+  dav: { color: "bg-green-100 text-green-600 dark:bg-green-900/40 dark:text-green-400", href: "/calendar" },
+  deck: { color: "bg-amber-100 text-amber-600 dark:bg-amber-900/40 dark:text-amber-400", href: "/deck" },
+};
+
+const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.userAgent);
+const MOD = isMac ? "⌘" : "Ctrl";
+const SHIFT = isMac ? "⇧" : "Shift";
+
 const SHORTCUTS = [
-  { keys: ["⌘", "K"], label: "Search / Command palette" },
-  { keys: ["⌘", "/"], label: "Help" },
-  { keys: ["⌘", "N"], label: "New note" },
-  { keys: ["⌘", "⇧", "M"], label: "Compose email" },
+  { keys: [MOD, "K"], label: "Search / Command palette" },
+  { keys: [MOD, "/"], label: "Help" },
+  { keys: [MOD, "N"], label: "New note" },
+  { keys: [MOD, SHIFT, "M"], label: "Compose email" },
   { keys: ["Esc"], label: "Close dialog" },
   { keys: ["↑", "↓"], label: "Navigate results" },
   { keys: ["Enter"], label: "Select result" },
-  { keys: ["⌘", "D"], label: "Toggle dark mode" },
+  { keys: [MOD, "D"], label: "Toggle dark mode" },
 ];
 
 interface TopBarProps {
@@ -105,10 +127,55 @@ export function TopBar({ sidebarCollapsed }: TopBarProps) {
     queryKey: ["/api/files", "/"],
     queryFn: () => fetchJson<{ data: FileNotification[] }>("/api/files?path=%2F"),
   });
+  const { data: incomingSharesData } = useQuery({
+    queryKey: ["/api/shares/incoming"],
+    queryFn: () => fetchJson<{ data: IncomingShareNotification[] }>("/api/shares/incoming"),
+    refetchInterval: 60_000,
+  });
+  const { data: notificationsData } = useQuery({
+    queryKey: ["/api/notifications"],
+    queryFn: () => fetchJson<{ data: NotificationItem[] }>("/api/notifications"),
+    refetchInterval: 60_000,
+  });
+
+  const dismissNotification = (id: number) => {
+    queryClient.setQueryData(["/api/notifications"], (old: { data: NotificationItem[] } | undefined) =>
+      old ? { data: old.data.filter((n) => n.id !== id) } : old,
+    );
+    void fetchJson(`/api/notifications/${id}`, { method: "DELETE" }).catch(() => undefined);
+  };
   const userName = userData?.data?.name || "User";
   const userEmail = userData?.data?.email || "";
 
   const liveNotifications = useMemo(() => {
+    const realNotifications = (notificationsData?.data || []).slice(0, 8).map((n) => {
+      const meta = NOTIF_APP_META[n.app] || { color: "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400", href: "/activity" };
+      return {
+        id: 400000 + n.id,
+        dismissId: n.id,
+        icon: Bell,
+        color: meta.color,
+        text: n.message ? `${n.subject}: ${n.message}` : n.subject,
+        time: n.datetime ? new Date(n.datetime).toLocaleString() : "Just now",
+        unread: true,
+        href: meta.href,
+      };
+    });
+
+    const shareNotifications = (incomingSharesData?.data || [])
+      .slice()
+      .sort((a, b) => (b.sharedAt || "").localeCompare(a.sharedAt || ""))
+      .slice(0, 5)
+      .map((share) => ({
+        id: 300000 + (Number(share.id) || 0),
+        icon: Share2,
+        color: "bg-purple-100 text-purple-600 dark:bg-purple-900/40 dark:text-purple-400",
+        text: `${share.ownerDisplayName} shared “${share.name}” with you`,
+        time: share.sharedAt ? new Date(share.sharedAt).toLocaleString() : "Recently",
+        unread: true,
+        href: "/files?view=shared",
+      }));
+
     const conversationNotifications = (conversationsData?.data || [])
       .filter((conversation) => (conversation.unreadCount || 0) > 0)
       .map((conversation) => ({
@@ -118,6 +185,7 @@ export function TopBar({ sidebarCollapsed }: TopBarProps) {
         text: `${conversation.unreadCount} unread in ${conversation.name}${conversation.lastMessage ? `: ${conversation.lastMessage}` : ""}`,
         time: conversation.lastMessageAt ? new Date(conversation.lastMessageAt).toLocaleString() : "Just now",
         unread: true,
+        href: "/talk",
       }));
 
     const eventNotifications = (eventsData?.data || [])
@@ -131,6 +199,7 @@ export function TopBar({ sidebarCollapsed }: TopBarProps) {
         text: `Upcoming: ${event.title}`,
         time: new Date(event.startAt).toLocaleString(),
         unread: false,
+        href: "/calendar",
       }));
 
     const fileNotifications = (filesData?.data || [])
@@ -145,16 +214,23 @@ export function TopBar({ sidebarCollapsed }: TopBarProps) {
         text: `Recently updated: ${file.name}`,
         time: new Date(file.modifiedAt).toLocaleString(),
         unread: false,
+        href: "/files",
       }));
 
-    return [...conversationNotifications, ...eventNotifications, ...fileNotifications]
+    return [...realNotifications, ...shareNotifications, ...conversationNotifications, ...eventNotifications, ...fileNotifications]
       .filter((notification) => !dismissedNotificationIds.includes(notification.id))
-      .slice(0, 8);
-  }, [conversationsData?.data, dismissedNotificationIds, eventsData?.data, filesData?.data]);
+      .slice(0, 10);
+  }, [conversationsData?.data, dismissedNotificationIds, eventsData?.data, filesData?.data, incomingSharesData?.data, notificationsData?.data]);
 
   const badgeCount = liveNotifications.filter((notification) => notification.unread).length;
 
   const markAllRead = () => {
+    // Dismiss real Nextcloud notifications server-side, and locally hide the synthesized ones.
+    const realIds = (notificationsData?.data || []).map((n) => n.id);
+    if (realIds.length) {
+      queryClient.setQueryData(["/api/notifications"], { data: [] });
+      void fetchJson("/api/notifications", { method: "DELETE" }).catch(() => undefined);
+    }
     setDismissedNotificationIds((current) => [
       ...new Set([...current, ...liveNotifications.map((notification) => notification.id)]),
     ]);
@@ -230,17 +306,31 @@ export function TopBar({ sidebarCollapsed }: TopBarProps) {
                   <div
                     key={n.id}
                     className={cn(
-                      "flex gap-3 px-4 py-3 border-b last:border-b-0",
-                      n.unread && "bg-primary/[0.03]"
+                      "group relative flex border-b last:border-b-0",
+                      n.unread && "bg-primary/[0.03]",
                     )}
                   >
-                    <div className={cn("w-8 h-8 rounded-full flex items-center justify-center shrink-0", n.color)}>
-                      <Icon size={14} />
-                    </div>
-                    <div className="min-w-0">
-                      <p className="text-sm leading-snug">{n.text}</p>
-                      <p className="text-xs text-muted-foreground mt-0.5">{n.time}</p>
-                    </div>
+                    <button
+                      onClick={() => navigate(n.href)}
+                      className="flex w-full gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/40"
+                    >
+                      <div className={cn("w-8 h-8 rounded-full flex items-center justify-center shrink-0", n.color)}>
+                        <Icon size={14} />
+                      </div>
+                      <div className="min-w-0 pr-5">
+                        <p className="text-sm leading-snug">{n.text}</p>
+                        <p className="text-xs text-muted-foreground mt-0.5">{n.time}</p>
+                      </div>
+                    </button>
+                    {"dismissId" in n && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); dismissNotification(n.dismissId); }}
+                        aria-label="Dismiss notification"
+                        className="absolute right-2 top-2 rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-muted hover:text-foreground group-hover:opacity-100"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    )}
                   </div>
                 );
               })}

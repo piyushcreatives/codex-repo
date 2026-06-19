@@ -1,0 +1,49 @@
+# notify_push (Nextcloud "Client Push" / High Performance Backend) sidecar.
+#
+# OPT-IN: this file is NOT part of the default stack. Bring it up with:
+#   docker compose -f docker-compose.yml -f docker-compose.override.yml -f docker-compose.notify-push.yml up -d
+#
+# It runs the notify_push Rust binary that ships INSIDE the notify_push app.
+# You must install that app in Nextcloud first (see NOTIFY_PUSH.md), because the
+# binary lives on the shared nextcloud_data volume:
+#   /var/www/html/custom_apps/notify_push/bin/x86_64/notify_push   (app-store install)
+#   /var/www/html/apps/notify_push/bin/x86_64/notify_push          (bundled install)
+#
+# We reuse the same nextcloud:28-apache image so the glibc/arch matches the binary,
+# and mount the same volume so the binary can read config.php (DB + Redis creds).
+
+services:
+  notify_push:
+    image: nextcloud:28-apache
+    restart: unless-stopped
+    networks:
+      - nextcloud_net
+    depends_on:
+      nextcloud:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # NEXTCLOUD_URL lets the binary reach NC for its handshake/self-test.
+    environment:
+      NEXTCLOUD_URL: "http://nextcloud:80"
+    # Wait until the app (hence the binary) is installed, then exec it on 0.0.0.0:7867.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo "[notify_push] waiting for the notify_push binary on the shared volume..."
+        BIN=""
+        while [ -z "$$BIN" ]; do
+          BIN=$$(ls /var/www/html/custom_apps/notify_push/bin/x86_64/notify_push \
+                    /var/www/html/apps/notify_push/bin/x86_64/notify_push 2>/dev/null | head -1)
+          [ -z "$$BIN" ] && sleep 5
+        done
+        echo "[notify_push] found binary at $$BIN — starting on :7867"
+        exec "$$BIN" --port 7867 /var/www/html/config/config.php
+    volumes:
+      - nextcloud_data:/var/www/html
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:7867/test/cookie"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s

@@ -3,12 +3,12 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import { eq } from "drizzle-orm";
 import {
   users, files, conversations, messages, events, notes, contacts,
-  boards, stacks, cards, emails, activities,
+  boards, stacks, cards, emails,
 } from "../shared/schema";
 import type {
   User, InsertUser, File as DbFile, InsertFile,
   Conversation, Message, Event, Note, Contact,
-  Board, Stack, Card, Email, Activity,
+  Board, Stack, Card, Email,
 } from "../shared/schema";
 
 const sqlite = new Database("dev.db");
@@ -129,16 +129,6 @@ sqlite.exec(`
     is_read INTEGER DEFAULT 0,
     is_starred INTEGER DEFAULT 0,
     has_attachment INTEGER DEFAULT 0
-  );
-  CREATE TABLE IF NOT EXISTS activities (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    type TEXT NOT NULL,
-    actor TEXT NOT NULL,
-    actor_avatar TEXT,
-    description TEXT NOT NULL,
-    subject TEXT,
-    timestamp TEXT NOT NULL,
-    is_read INTEGER DEFAULT 0
   );
 `);
 
@@ -373,30 +363,6 @@ function seed() {
     { folder: "drafts", from: "Piyush Sharma", fromEmail: "piyush@cloudspace.home", to: "sneha@pixelcraft.in", subject: "CloudSpace icon set request", preview: "Hi Sneha, we need custom icons for...", body: "Hi Sneha,\n\nWe need custom icons for a few CloudSpace-specific features that aren't covered by Lucide. Specifically: storage quota visualization, file sharing indicators, and activity type badges.", receivedAt: "2026-04-06T12:00:00Z", isRead: true },
     { folder: "drafts", from: "Piyush Sharma", fromEmail: "piyush@cloudspace.home", to: "rahul@webworks.in", subject: "Phase 2 migration consultation", preview: "Hi Rahul, I wanted to discuss the...", body: "Hi Rahul,\n\nI wanted to discuss the React-to-Vue 3 migration strategy for Phase 2. Your experience with large-scale framework migrations would be invaluable. Are you available for a call this week?", receivedAt: "2026-04-06T11:00:00Z", isRead: true },
   ]).run();
-
-  // Activities
-  db.insert(activities).values([
-    { type: "file", actor: "Piyush Sharma", description: "uploaded Q1 Report.pdf to /Documents", subject: "Q1 Report.pdf", timestamp: "2026-04-06T11:00:00Z" },
-    { type: "share", actor: "Piyush Sharma", description: "shared Design Mockups.fig with Rohan Mehra", subject: "Design Mockups.fig", timestamp: "2026-04-06T10:45:00Z" },
-    { type: "comment", actor: "Rohan Mehra", description: "commented on Files browser card in Sprint 12", subject: "Files browser — drag & drop upload", timestamp: "2026-04-06T10:30:00Z" },
-    { type: "talk", actor: "Priya Kapoor", description: "sent a message in Product Team", subject: "Sprint planning tomorrow 10am", timestamp: "2026-04-06T10:00:00Z" },
-    { type: "file", actor: "Piyush Sharma", description: "modified Architecture.docx", subject: "Architecture.docx", timestamp: "2026-04-06T09:30:00Z" },
-    { type: "system", actor: "System", description: "Nextcloud updated to version 29.0.2", subject: "System update", timestamp: "2026-04-06T08:00:00Z" },
-    { type: "file", actor: "Arjun Singh", description: "uploaded API_Contract.docx to /Projects", subject: "API_Contract.docx", timestamp: "2026-04-06T07:00:00Z" },
-    { type: "share", actor: "Rohan Mehra", description: "shared presentation.pptx with Product Team", subject: "presentation.pptx", timestamp: "2026-04-05T18:00:00Z" },
-    { type: "talk", actor: "Arjun Singh", description: "sent a message in Arjun Singh chat", subject: "Check the API contract doc", timestamp: "2026-04-05T17:15:00Z" },
-    { type: "file", actor: "Piyush Sharma", description: "created folder /Projects", subject: "Projects", timestamp: "2026-04-05T16:00:00Z" },
-    { type: "comment", actor: "Priya Kapoor", description: "commented on Dashboard widget grid card", subject: "Dashboard widget grid", timestamp: "2026-04-05T15:30:00Z" },
-    { type: "file", actor: "Piyush Sharma", description: "uploaded Nextcloud_Backup.tar.gz", subject: "Nextcloud_Backup.tar.gz", timestamp: "2026-04-05T15:00:00Z" },
-    { type: "share", actor: "Piyush Sharma", description: "shared Budget_2026.xlsx with Priya Kapoor", subject: "Budget_2026.xlsx", timestamp: "2026-04-05T14:00:00Z" },
-    { type: "system", actor: "System", description: "Daily backup completed successfully", subject: "Backup", timestamp: "2026-04-05T12:00:00Z" },
-    { type: "talk", actor: "Rohan Mehra", description: "sent a message in Product Team", subject: "Dashboard is 80% done", timestamp: "2026-04-05T09:10:00Z" },
-    { type: "file", actor: "Piyush Sharma", description: "uploaded notes.md to /Documents", subject: "notes.md", timestamp: "2026-04-04T20:00:00Z" },
-    { type: "system", actor: "System", description: "User Piyush Sharma logged in from 192.168.1.10", subject: "Login", timestamp: "2026-04-04T18:00:00Z" },
-    { type: "share", actor: "Vikram Patel", description: "shared server-config.yml with HomeServer Admins", subject: "server-config.yml", timestamp: "2026-04-04T16:00:00Z" },
-    { type: "file", actor: "Piyush Sharma", description: "uploaded Team Photo.jpg to /Photos", subject: "Team Photo.jpg", timestamp: "2026-04-04T14:00:00Z" },
-    { type: "comment", actor: "Arjun Singh", description: "commented on API contract review", subject: "Re: API Contract Review", timestamp: "2026-04-04T11:00:00Z" },
-  ]).run();
 }
 
 seed();
@@ -462,11 +428,6 @@ export interface IStorage {
   updateEmail(id: number, data: Partial<Email>): Email | undefined;
   deleteEmail(id: number): void;
   getEmailCounts(): { inbox: number; drafts: number; spam: number };
-  // Activities
-  getActivities(): Activity[];
-  getActivity(id: number): Activity | undefined;
-  updateActivity(id: number, data: Partial<Activity>): Activity | undefined;
-  markAllActivitiesRead(): void;
 }
 
 // ─── Implementation ─────────────────────────────────────────
@@ -578,15 +539,6 @@ class DatabaseStorage implements IStorage {
     };
   }
 
-  getActivities() { return db.select().from(activities).all(); }
-  getActivity(id: number) { return db.select().from(activities).where(eq(activities.id, id)).get(); }
-  updateActivity(id: number, data: Partial<Activity>) {
-    db.update(activities).set(data).where(eq(activities.id, id)).run();
-    return this.getActivity(id);
-  }
-  markAllActivitiesRead() {
-    db.update(activities).set({ isRead: true }).run();
-  }
 }
 
 export const storage = new DatabaseStorage();

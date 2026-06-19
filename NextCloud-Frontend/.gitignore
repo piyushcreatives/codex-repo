@@ -20,6 +20,9 @@ dev.db-wal
 sessions.db
 sessions.db-shm
 sessions.db-wal
+activity-state.db
+activity-state.db-shm
+activity-state.db-wal
 test-results/
 playwright/.auth/
 

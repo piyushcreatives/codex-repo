@@ -161,14 +161,31 @@ export async function refreshStartupCapabilities() {
 
 void refreshStartupCapabilities();
 
+// Per-user capability cache. Installed apps don't change during a session, so a short
+// TTL eliminates a live /cloud/apps round-trip (plus a mail probe) on nearly every request.
+const CAPABILITY_CACHE_TTL_MS = Number(process.env.CAPABILITY_CACHE_TTL_MS || 60_000);
+const capabilityCache = new Map<string, { snapshot: CapabilitySnapshot; expiresAt: number }>();
+
 export async function getCapabilities(session?: NextcloudSession) {
-  if (session) {
-    try {
-      return await buildSnapshot(sessionHeaders(session), "session-auth");
-    } catch {
-      return startupSnapshot;
-    }
+  if (!session) return startupSnapshot;
+
+  const now = Date.now();
+  const cached = capabilityCache.get(session.username);
+  if (cached && cached.expiresAt > now) {
+    return cached.snapshot;
   }
 
-  return startupSnapshot;
+  try {
+    const snapshot = await buildSnapshot(sessionHeaders(session), "session-auth");
+    capabilityCache.set(session.username, { snapshot, expiresAt: now + CAPABILITY_CACHE_TTL_MS });
+    return snapshot;
+  } catch {
+    // On upstream failure, serve a stale cached snapshot if we have one, else the startup default.
+    return cached?.snapshot ?? startupSnapshot;
+  }
+}
+
+export function invalidateCapabilityCache(username?: string) {
+  if (username) capabilityCache.delete(username);
+  else capabilityCache.clear();
 }

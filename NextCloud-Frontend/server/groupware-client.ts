@@ -24,6 +24,7 @@ type TalkConversationRecord = {
   unreadCount: number;
   members: string;
   isMuted: boolean;
+  isFavorite: boolean;
   adminId: number | null;
   createdBy: number | null;
 };
@@ -66,6 +67,7 @@ type CalendarEventRecord = {
   href: string;
   etag: string | null;
   calendarHref: string;
+  uid: string | null;
   title: string;
   description: string | null;
   startAt: string;
@@ -80,6 +82,7 @@ type ContactRecord = {
   id: number;
   href: string;
   etag: string | null;
+  uid: string | null;
   addressBookHref: string;
   name: string;
   email: string | null;
@@ -89,6 +92,12 @@ type ContactRecord = {
   avatar: null;
   tags: string;
 };
+
+// Nextcloud contact "groups" are vCard CATEGORIES. CloudSpace's UI offers a fixed
+// single-select group plus free-form tags; we persist both as CATEGORIES and, on
+// read, treat the first category matching a known group name as the group and the
+// rest as tags. This round-trips cleanly with the native Contacts app.
+const KNOWN_CONTACT_GROUPS = ["Work", "Personal", "Friends", "Family"];
 
 type NoteRecord = {
   id: number;
@@ -102,23 +111,46 @@ type NoteRecord = {
   isPinned: boolean;
 };
 
-const NOTE_METADATA_PATTERN = /^<!--\s*cloudspace-id:([a-zA-Z0-9-]+)\s*-->\r?\n?/;
+// Notes are plain WebDAV markdown files, which carry no pin/tag metadata. CloudSpace
+// stores that (plus a stable id) in a leading HTML comment so it travels with the file
+// and survives in the native Files/Notes apps. Legacy `cloudspace-id:` comments are
+// still read and auto-migrated to the richer `cloudspace-meta:` form on next save.
+const NOTE_META_PATTERN = /^<!--\s*cloudspace-meta:(\{[\s\S]*?\})\s*-->\r?\n?/;
+const NOTE_LEGACY_PATTERN = /^<!--\s*cloudspace-id:([a-zA-Z0-9-]+)\s*-->\r?\n?/;
+
+// title is authoritative in metadata so it can hold spaces/punctuation that the
+// filename can't (the filename is just a sanitized, human-friendly mirror).
+type NoteMeta = { id: string; title?: string; pinned: boolean; tags: string[] };
 
 function normalizeNoteTitle(rawTitle: string) {
   return rawTitle.replace(/\.md$/i, "").replace(/-\d{10,}$/i, "") || "Untitled";
 }
 
-function getNoteStableId(content: string, href: string) {
-  const match = content.match(NOTE_METADATA_PATTERN);
-  return match?.[1] || `href:${href}`;
+function parseNoteMeta(content: string, href: string): NoteMeta {
+  const m = content.match(NOTE_META_PATTERN);
+  if (m) {
+    try {
+      const j = JSON.parse(m[1]) as Partial<NoteMeta>;
+      return {
+        id: typeof j.id === "string" && j.id ? j.id : `href:${href}`,
+        title: typeof j.title === "string" ? j.title : undefined,
+        pinned: Boolean(j.pinned),
+        tags: Array.isArray(j.tags) ? j.tags.filter((t): t is string => typeof t === "string") : [],
+      };
+    } catch { /* malformed — fall through to legacy/default */ }
+  }
+  const legacy = content.match(NOTE_LEGACY_PATTERN);
+  if (legacy) return { id: legacy[1], pinned: false, tags: [] };
+  return { id: `href:${href}`, pinned: false, tags: [] };
 }
 
 function stripNoteMetadata(content: string) {
-  return content.replace(NOTE_METADATA_PATTERN, "");
+  return content.replace(NOTE_META_PATTERN, "").replace(NOTE_LEGACY_PATTERN, "");
 }
 
-function serializeNoteContent(stableId: string, content: string) {
-  return `<!-- cloudspace-id:${stableId} -->\n${stripNoteMetadata(content)}`;
+function serializeNoteContent(meta: NoteMeta, content: string) {
+  const json = JSON.stringify({ id: meta.id, title: meta.title, pinned: meta.pinned, tags: meta.tags });
+  return `<!-- cloudspace-meta:${json} -->\n${stripNoteMetadata(content)}`;
 }
 
 type DeckLabel = {
@@ -189,7 +221,7 @@ function toBasicAuth(session: NextcloudSession) {
 }
 
 function hashToId(value: string) {
-  const digest = createHash("sha1").update(value).digest("hex").slice(0, 7);
+  const digest = createHash("sha1").update(value).digest("hex").slice(0, 8);
   return parseInt(digest, 16);
 }
 
@@ -352,7 +384,7 @@ function formatIcsDate(dateIso: string, allDay: boolean) {
     const y = date.getUTCFullYear();
     const m = String(date.getUTCMonth() + 1).padStart(2, "0");
     const d = String(date.getUTCDate()).padStart(2, "0");
-    return `VALUE=DATE:${y}${m}${d}`;
+    return `;VALUE=DATE:${y}${m}${d}`;
   }
 
   const y = date.getUTCFullYear();
@@ -365,7 +397,13 @@ function formatIcsDate(dateIso: string, allDay: boolean) {
 }
 
 function escapeIcs(value: string) {
-  return value.replace(/\\/g, "\\\\").replace(/\n/g, "\\n").replace(/,/g, "\\,").replace(/;/g, "\\;");
+  // Escape backslash first, then collapse any CR/LF combination into the literal \n token
+  // BEFORE escaping commas/semicolons — prevents CRLF line-injection of extra ICS properties.
+  return value
+    .replace(/\\/g, "\\\\")
+    .replace(/\r\n|\r|\n/g, "\\n")
+    .replace(/,/g, "\\,")
+    .replace(/;/g, "\\;");
 }
 
 function parseVcardValue(content: string, key: string) {
@@ -491,6 +529,7 @@ function normalizeTalkConversation(room: JsonObject) {
     unreadCount: Number(room.unreadMessages || 0),
     members: toJsonString(members),
     isMuted: Number(room.notificationLevel || 0) === 0,
+    isFavorite: Boolean(room.isFavorite),
     adminId: actorId ? hashToId(`user:${actorId}`) : null,
     createdBy: actorId ? hashToId(`user:${actorId}`) : null,
   } satisfies TalkConversationRecord;
@@ -778,6 +817,156 @@ export async function setConversationMute(session: NextcloudSession, conversatio
   return { isMuted: muted };
 }
 
+export async function setConversationFavorite(session: NextcloudSession, conversationId: number, favorite: boolean) {
+  const conversation = await findTalkConversation(session, conversationId);
+  if (!conversation) return null;
+
+  await nextcloudJson(
+    session,
+    `/ocs/v2.php/apps/spreed/api/v4/room/${encodeURIComponent(conversation.token)}/favorite?format=json`,
+    { method: favorite ? "POST" : "DELETE" },
+  );
+
+  return { isFavorite: favorite };
+}
+
+export async function listNotifications(session: NextcloudSession) {
+  try {
+    const payload = await nextcloudJson<{ ocs?: { data?: JsonObject[] } }>(
+      session,
+      "/ocs/v2.php/apps/notifications/api/v2/notifications?format=json",
+    );
+    return (payload.ocs?.data || []).map((n) => ({
+      id: Number(n.notification_id || 0),
+      app: String(n.app || ""),
+      subject: String(n.subject || ""),
+      message: String(n.message || ""),
+      datetime: String(n.datetime || ""),
+      link: typeof n.link === "string" ? n.link : null,
+    }));
+  } catch {
+    return []; // notifications app not installed / unavailable
+  }
+}
+
+export async function dismissNotification(session: NextcloudSession, id: number) {
+  await nextcloudJson(session, `/ocs/v2.php/apps/notifications/api/v2/notifications/${id}?format=json`, { method: "DELETE" });
+  return { success: true };
+}
+
+// notify_push (High Performance Backend) WebSocket endpoint, if the app is installed.
+export async function getNotifyPushEndpoint(session: NextcloudSession): Promise<string | null> {
+  try {
+    const payload = await nextcloudJson<{
+      ocs?: { data?: { capabilities?: { notify_push?: { endpoints?: { websocket?: string } } } } };
+    }>(session, "/ocs/v2.php/cloud/capabilities?format=json");
+    return payload.ocs?.data?.capabilities?.notify_push?.endpoints?.websocket || null;
+  } catch {
+    return null;
+  }
+}
+
+export async function dismissAllNotifications(session: NextcloudSession) {
+  await nextcloudJson(session, "/ocs/v2.php/apps/notifications/api/v2/notifications?format=json", { method: "DELETE" });
+  return { success: true };
+}
+
+export type RawActivity = {
+  id: number;
+  type: string; // 'file' | 'share' | 'comment' | 'system' | 'talk'
+  actor: string;
+  actorAvatar: string | null;
+  description: string;
+  subject: string | null;
+  timestamp: string;
+  link: string | null;
+};
+
+// Map Nextcloud's many app/type combinations onto the five categories the
+// Activity UI knows how to render (file / share / comment / talk / system).
+function mapActivityType(app: string, type: string): string {
+  const a = app.toLowerCase();
+  const t = type.toLowerCase();
+  if (a === "files") return "file";
+  if (a === "files_sharing" || t.includes("share")) return "share";
+  if (a === "comments" || t.includes("comment")) return "comment";
+  if (a === "spreed" || a === "talk") return "talk";
+  return "system";
+}
+
+// Resolve a Nextcloud user id → display name, cached (the provisioning endpoint
+// is admin/subadmin-gated, so this gracefully falls back to the uid otherwise —
+// no regression, an upgrade where permitted).
+const displayNameCache = new Map<string, { name: string; ts: number }>();
+const DISPLAY_NAME_TTL_MS = 10 * 60 * 1000;
+
+async function resolveDisplayName(session: NextcloudSession, uid: string): Promise<string> {
+  if (!uid) return "Someone";
+  const cached = displayNameCache.get(uid);
+  if (cached && Date.now() - cached.ts < DISPLAY_NAME_TTL_MS) return cached.name;
+  let name = uid;
+  try {
+    const payload = await nextcloudJson<{ ocs?: { data?: { displayname?: string } } }>(
+      session,
+      `/ocs/v2.php/cloud/users/${encodeURIComponent(uid)}?format=json`,
+    );
+    name = payload.ocs?.data?.displayname || uid;
+  } catch {
+    name = uid; // not permitted / unknown — fall back to the id
+  }
+  displayNameCache.set(uid, { name, ts: Date.now() });
+  return name;
+}
+
+export async function listActivities(session: NextcloudSession, opts?: { limit?: number }): Promise<RawActivity[]> {
+  const limit = Math.min(Math.max(opts?.limit ?? 50, 1), 200);
+  try {
+    // `/all` is the full stream visible to the user (matches the web UI's "All activity").
+    const payload = await nextcloudJson<{ ocs?: { data?: JsonObject[] } }>(
+      session,
+      `/ocs/v2.php/apps/activity/api/v2/activity/all?format=json&limit=${limit}`,
+    );
+    const raw = payload.ocs?.data || [];
+
+    // Resolve each unique actor id to a display name once (cached, in parallel).
+    const uids = [...new Set(raw.map((a) => String(a.user || "")).filter(Boolean))];
+    const nameByUid = new Map<string, string>();
+    await Promise.all(uids.map(async (uid) => nameByUid.set(uid, await resolveDisplayName(session, uid))));
+
+    return raw.map((a): RawActivity => {
+      const app = String(a.app || "");
+      const type = String(a.type || "");
+      const uid = String(a.user || "");
+      const objectName = typeof a.object_name === "string" && a.object_name ? a.object_name : null;
+      return {
+        id: Number(a.activity_id || 0),
+        type: mapActivityType(app, type),
+        actor: nameByUid.get(uid) || "Someone",
+        actorAvatar: null,
+        description: String(a.subject || ""),
+        subject: objectName,
+        timestamp: String(a.datetime || ""),
+        link: typeof a.link === "string" && a.link ? String(a.link) : null,
+      };
+    });
+  } catch {
+    return []; // activity app not installed / unavailable
+  }
+}
+
+export async function markConversationUnread(session: NextcloudSession, conversationId: number) {
+  const conversation = await findTalkConversation(session, conversationId);
+  if (!conversation) return false;
+
+  await nextcloudJson(
+    session,
+    `/ocs/v2.php/apps/spreed/api/v1/chat/${encodeURIComponent(conversation.token)}/read?format=json`,
+    { method: "DELETE" },
+  );
+
+  return true;
+}
+
 export async function setConversationModerator(session: NextcloudSession, conversationId: number, adminId: number) {
   const conversation = await findTalkConversation(session, conversationId);
   if (!conversation) return null;
@@ -923,6 +1112,32 @@ export async function sendConversationMessage(session: NextcloudSession, convers
   } satisfies TalkMessageRecord;
 }
 
+export async function addReaction(session: NextcloudSession, conversationId: number, messageId: number, reaction: string) {
+  const conversation = await findTalkConversation(session, conversationId);
+  if (!conversation) throw new Error("Conversation not found");
+  await nextcloudJson(
+    session,
+    `/ocs/v2.php/apps/spreed/api/v1/reaction/${encodeURIComponent(conversation.token)}/${messageId}?format=json`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reaction }),
+    },
+  );
+  return { success: true };
+}
+
+export async function removeReaction(session: NextcloudSession, conversationId: number, messageId: number, reaction: string) {
+  const conversation = await findTalkConversation(session, conversationId);
+  if (!conversation) throw new Error("Conversation not found");
+  await nextcloudJson(
+    session,
+    `/ocs/v2.php/apps/spreed/api/v1/reaction/${encodeURIComponent(conversation.token)}/${messageId}?reaction=${encodeURIComponent(reaction)}&format=json`,
+    { method: "DELETE" },
+  );
+  return { success: true };
+}
+
 async function listCalendars(session: NextcloudSession) {
   return listDavCollections(session, cloudPathToDavUrl("calendars", session.username, "/"));
 }
@@ -963,6 +1178,7 @@ async function listCalendarEventsInternal(session: NextcloudSession) {
           href,
           etag: extractProp(block, "getetag") || null,
           calendarHref: calendar.href,
+          uid: stripIcsValue(getIcsLine(calendarData, "UID")?.value || "") || null,
           title: stripIcsValue(getIcsLine(calendarData, "SUMMARY")?.value || "Untitled"),
           description: stripIcsValue(getIcsLine(calendarData, "DESCRIPTION")?.value || "") || null,
           startAt: start.iso,
@@ -1011,8 +1227,9 @@ function buildEventIcs(event: {
   endAt: string;
   allDay?: boolean | null;
   location?: string | null;
+  uid?: string;
 }) {
-  const uid = `cloudspace-${Date.now()}-${Math.random().toString(36).slice(2)}@cloudspace.local`;
+  const uid = event.uid || `cloudspace-${Date.now()}-${Math.random().toString(36).slice(2)}@cloudspace.local`;
   const allDay = Boolean(event.allDay);
   const lines = [
     "BEGIN:VCALENDAR",
@@ -1096,6 +1313,7 @@ export async function updateEvent(session: NextcloudSession, eventId: number, pa
       endAt: patch.endAt ?? existing.endAt,
       allDay: patch.allDay ?? existing.allDay,
       location: patch.location ?? existing.location,
+      uid: existing.uid,
     }),
   });
 
@@ -1185,21 +1403,27 @@ async function listContactsInternal(session: NextcloudSession) {
         const vcard = extractProp(block, "address-data");
         if (!href || !vcard) return null;
         const name = parseVcardValue(vcard, "FN") || parseVcardValue(vcard, "N") || "Unnamed contact";
-        const tags = (parseVcardValue(vcard, "CATEGORIES") || "")
+        const categories = (parseVcardValue(vcard, "CATEGORIES") || "")
           .split(",")
           .map((tag) => tag.trim())
           .filter(Boolean);
+        const isGroupCard = parseVcardValue(vcard, "X-ADDRESSBOOKSERVER-KIND") === "group";
+        const groupCategory = categories.find((c) => KNOWN_CONTACT_GROUPS.includes(c)) || null;
+        const group = isGroupCard ? "Group" : (groupCategory || "All");
+        // Tags are the remaining categories (everything that isn't the chosen group).
+        const tags = categories.filter((c) => c !== groupCategory);
 
         return {
           id: hashToId(`card:${href}`),
           href,
           etag: extractProp(block, "getetag") || null,
+          uid: parseVcardValue(vcard, "UID") || null,
           addressBookHref: book.href,
           name,
           email: parseVcardValue(vcard, "EMAIL"),
           phone: parseVcardValue(vcard, "TEL"),
           company: parseVcardValue(vcard, "ORG"),
-          group: parseVcardValue(vcard, "X-ADDRESSBOOKSERVER-KIND") === "group" ? "Group" : "All",
+          group,
           avatar: null,
           tags: toJsonString(tags),
         } satisfies ContactRecord;
@@ -1228,9 +1452,12 @@ function buildVcard(contact: {
   email?: string | null;
   phone?: string | null;
   company?: string | null;
+  group?: string | null;
   tags?: string[] | null;
+  uid?: string | null;
 }) {
-  const uid = randomUUID();
+  // Preserve the existing UID on edit so the contact keeps its sync identity.
+  const uid = contact.uid || randomUUID();
   const lines = [
     "BEGIN:VCARD",
     "VERSION:3.0",
@@ -1241,7 +1468,13 @@ function buildVcard(contact: {
   if (contact.email) lines.push(`EMAIL;TYPE=INTERNET:${contact.email.replace(/\r?\n/g, "").trim()}`);
   if (contact.phone) lines.push(`TEL;TYPE=CELL:${contact.phone.replace(/\r?\n/g, " ").trim()}`);
   if (contact.company) lines.push(`ORG:${contact.company.replace(/\r?\n/g, " ").trim()}`);
-  if (contact.tags?.length) lines.push(`CATEGORIES:${contact.tags.map((tag) => tag.replace(/\r?\n/g, " ").trim()).join(",")}`);
+  // The group is just another category (Nextcloud-native), merged with tags and de-duped.
+  const categories = [
+    ...(contact.group && contact.group !== "All" && contact.group !== "Group" ? [contact.group] : []),
+    ...(contact.tags || []),
+  ].map((c) => c.replace(/\r?\n/g, " ").trim()).filter(Boolean);
+  const uniqueCategories = [...new Set(categories)];
+  if (uniqueCategories.length) lines.push(`CATEGORIES:${uniqueCategories.join(",")}`);
   lines.push("END:VCARD", "");
   return lines.join("\r\n");
 }
@@ -1262,6 +1495,7 @@ export async function createContact(session: NextcloudSession, input: {
   email?: string | null;
   phone?: string | null;
   company?: string | null;
+  group?: string | null;
   tags?: string | string[] | null;
 }) {
   const addressBook = await ensureWritableAddressBook(session);
@@ -1283,7 +1517,7 @@ export async function createContact(session: NextcloudSession, input: {
   const response = await nextcloudFetch(session, href, {
     method: "PUT",
     headers: { "Content-Type": "text/vcard; charset=utf-8" },
-    body: buildVcard({ ...input, tags }),
+    body: buildVcard({ ...input, group: input.group ?? null, tags }),
   });
 
   if (!response.ok) {
@@ -1303,6 +1537,7 @@ export async function updateContact(session: NextcloudSession, contactId: number
   email: string | null;
   phone: string | null;
   company: string | null;
+  group: string | null;
   tags: string;
 }>) {
   const contacts = await listContactsInternal(session);
@@ -1335,7 +1570,9 @@ export async function updateContact(session: NextcloudSession, contactId: number
       email: patch.email ?? existing.email,
       phone: patch.phone ?? existing.phone,
       company: patch.company ?? existing.company,
+      group: patch.group ?? existing.group,
       tags,
+      uid: existing.uid,
     }),
   });
 
@@ -1357,6 +1594,61 @@ export async function deleteContact(session: NextcloudSession, contactId: number
     throw new Error(`Deleting contact failed: ${response.status}`);
   }
   return true;
+}
+
+// Export every contact as a single .vcf, preserving the raw vCards (so fields we
+// don't model — addresses, birthdays, photos — survive the round-trip).
+export async function exportContactsVcf(session: NextcloudSession): Promise<string> {
+  const books = await listAddressBooks(session);
+  const cards: string[] = [];
+  for (const book of books) {
+    const xml = await davReport(
+      session,
+      book.href,
+      "1",
+      `<?xml version="1.0"?>
+<card:addressbook-query xmlns:d="DAV:" xmlns:card="urn:ietf:params:xml:ns:carddav">
+  <d:prop>
+    <card:address-data />
+  </d:prop>
+</card:addressbook-query>`,
+    );
+    for (const block of xmlBlocks(xml, "response")) {
+      const vcard = extractProp(block, "address-data");
+      if (vcard && /BEGIN:VCARD/i.test(vcard)) cards.push(vcard.trim());
+    }
+  }
+  return cards.join("\r\n") + (cards.length ? "\r\n" : "");
+}
+
+// Import a .vcf blob: split into individual vCards and PUT each into the writable
+// address book, preserving all fields. Returns how many were imported.
+export async function importContactsVcf(session: NextcloudSession, vcardText: string): Promise<{ imported: number; failed: number }> {
+  const addressBook = await ensureWritableAddressBook(session);
+  const matches = vcardText.match(/BEGIN:VCARD[\s\S]*?END:VCARD/gi) || [];
+  let imported = 0;
+  let failed = 0;
+  for (let i = 0; i < matches.length; i++) {
+    let card = matches[i].replace(/\r?\n/g, "\r\n").trim();
+    // Ensure a UID exists so re-imports stay stable.
+    if (!/^UID:/im.test(card)) {
+      card = card.replace(/BEGIN:VCARD/i, `BEGIN:VCARD\r\nUID:${randomUUID()}`);
+    }
+    const fileName = `cloudspace-import-${Date.now()}-${i}.vcf`;
+    const href = `${addressBook.href.replace(/\/+$/, "")}/${fileName}`;
+    try {
+      const response = await nextcloudFetch(session, href, {
+        method: "PUT",
+        headers: { "Content-Type": "text/vcard; charset=utf-8" },
+        body: card + "\r\n",
+      });
+      if (response.ok) imported++;
+      else failed++;
+    } catch {
+      failed++;
+    }
+  }
+  return { imported, failed };
 }
 
 async function ensureNotesFolder(session: NextcloudSession) {
@@ -1399,9 +1691,10 @@ async function listNotesInternal(session: NextcloudSession) {
       const response = await nextcloudFetch(session, href, { method: "GET" });
       if (!response.ok) return null;
       const rawContent = await response.text();
-      const stableId = getNoteStableId(rawContent, href);
+      const meta = parseNoteMeta(rawContent, href);
       const content = stripNoteMetadata(rawContent);
-      const title = normalizeNoteTitle(
+      // Prefer the metadata title (preserves spaces/punctuation); fall back to the filename.
+      const title = meta.title ?? normalizeNoteTitle(
         extractProp(block, "displayname") || href.split("/").at(-1) || "Untitled",
       );
       const updatedAt = extractProp(block, "getlastmodified")
@@ -1412,15 +1705,15 @@ async function listNotesInternal(session: NextcloudSession) {
         : updatedAt;
 
       return {
-        id: hashToId(`note:${stableId}`),
-        stableId,
+        id: hashToId(`note:${meta.id}`),
+        stableId: meta.id,
         href,
         title,
         content,
-        tags: "[]",
+        tags: JSON.stringify(meta.tags),
         updatedAt,
         createdAt,
-        isPinned: false,
+        isPinned: meta.pinned,
       } satisfies NoteRecord;
     }),
   );
@@ -1461,7 +1754,7 @@ export async function createNote(session: NextcloudSession, input: { title?: str
   const response = await nextcloudFetch(session, href, {
     method: "PUT",
     headers: { "Content-Type": "text/markdown; charset=utf-8" },
-    body: serializeNoteContent(stableId, input.content || ""),
+    body: serializeNoteContent({ id: stableId, title: fileBase, pinned: false, tags: [] }, input.content || ""),
   });
 
   if (!response.ok) {
@@ -1480,29 +1773,46 @@ export async function updateNote(session: NextcloudSession, noteId: number, patc
   title: string;
   content: string;
   isPinned: boolean;
+  tags: string;
 }>) {
   const notes = await listNotesInternal(session);
   const existing = notes.find((note) => note.id === noteId);
   if (!existing) return null;
 
+  // Merge pin/tags metadata so every write (incl. content auto-save) preserves them.
+  const existingTags = (() => { try { return JSON.parse(existing.tags) as string[]; } catch { return []; } })();
+  const nextTags = patch.tags !== undefined
+    ? (() => { try { const t = JSON.parse(patch.tags!); return Array.isArray(t) ? t.map(String) : existingTags; } catch { return existingTags; } })()
+    : existingTags;
+  const nextTitle = patch.title !== undefined && patch.title.trim() ? patch.title.trim() : existing.title;
+  const meta: NoteMeta = {
+    id: existing.stableId,
+    title: nextTitle,
+    pinned: patch.isPinned ?? existing.isPinned,
+    tags: nextTags,
+  };
+
   let href = existing.href;
-  if (patch.title && patch.title.trim() && patch.title.trim() !== existing.title) {
-    const renamedPath = joinCloudPath(NOTES_ROOT, `${patch.title.trim().replace(/[^\w.-]+/g, "-") || "note"}.md`);
+  if (nextTitle !== existing.title) {
+    // Keep the filename a sanitized, unique mirror of the title for the Files app.
+    // The title itself lives in metadata, so a failed/colliding rename is non-fatal.
+    const base = nextTitle.replace(/[^\w.-]+/g, "-") || "note";
+    const renamedPath = joinCloudPath(NOTES_ROOT, `${base}-${Date.now()}.md`);
     const destination = `${NC_BASE_URL}${cloudPathToDavUrl("files", session.username, renamedPath)}`;
     const moveResponse = await nextcloudFetch(session, href, {
       method: "MOVE",
       headers: { Destination: destination },
     });
-    if (!moveResponse.ok) {
-      throw new Error(`Renaming note failed: ${moveResponse.status}`);
+    if (moveResponse.ok) {
+      href = cloudPathToDavUrl("files", session.username, renamedPath);
     }
-    href = cloudPathToDavUrl("files", session.username, renamedPath);
+    // else: keep the old href; the title is still correct via metadata.
   }
 
   const response = await nextcloudFetch(session, href, {
     method: "PUT",
     headers: { "Content-Type": "text/markdown; charset=utf-8" },
-    body: serializeNoteContent(existing.stableId, patch.content ?? existing.content),
+    body: serializeNoteContent(meta, patch.content ?? existing.content),
   });
 
   if (!response.ok) {
@@ -1510,7 +1820,7 @@ export async function updateNote(session: NextcloudSession, noteId: number, patc
   }
 
   const refreshed = (await listNotesInternal(session)).find((note) => note.href === href);
-  return refreshed ? mapNote({ ...refreshed, isPinned: patch.isPinned ?? refreshed.isPinned }) : null;
+  return refreshed ? mapNote(refreshed) : null;
 }
 
 export async function deleteNote(session: NextcloudSession, noteId: number) {
@@ -1525,20 +1835,42 @@ export async function deleteNote(session: NextcloudSession, noteId: number) {
   return true;
 }
 
-function toDeckPriority(card: JsonObject) {
-  const title = String((card.duedate as JsonObject | undefined)?.status || card.priority || "").toLowerCase();
-  if (title.includes("high")) return "high";
-  if (title.includes("low")) return "low";
-  return "medium";
+// Nextcloud Deck has no native priority field, so CloudSpace persists priority as
+// a reserved, color-coded Deck label ("Priority: High/Medium/Low"). These labels are
+// derived back into the priority value on read and hidden from the normal label list.
+const PRIORITY_LABEL_PREFIX = "Priority: ";
+const PRIORITY_LABELS: Record<string, string> = {
+  high: "Priority: High",
+  medium: "Priority: Medium",
+  low: "Priority: Low",
+};
+const PRIORITY_COLORS: Record<string, string> = { high: "E5484D", medium: "F5A623", low: "31CC7C" };
+
+function priorityFromLabelTitle(title: string): string | null {
+  if (!title.startsWith(PRIORITY_LABEL_PREFIX)) return null;
+  const p = title.slice(PRIORITY_LABEL_PREFIX.length).trim().toLowerCase();
+  return p === "high" || p === "medium" || p === "low" ? p : null;
 }
 
 function mapDeckCard(card: JsonObject, boardId: number, stackId: number, labelsById: Map<number, DeckLabel>) {
-  const assignedUser = firstArrayItem((card.assignedUsers as DeckUser[] | undefined) || []);
+  // assignedUsers entries nest the user under `participant`: { participant: { uid, displayname } }.
+  const assignedRaw = firstArrayItem((card.assignedUsers as JsonObject[] | undefined) || []);
+  const assignedUser = (assignedRaw?.participant as DeckUser | undefined) || (assignedRaw as DeckUser | undefined);
+  const assigneeUid = assignedUser?.uid || (assignedRaw?.participant as JsonObject | undefined)?.primaryKey || null;
   const labelTitles = Array.isArray(card.labels)
     ? (card.labels as JsonObject[]).map((label) => String(label.title || label.name || "")).filter(Boolean)
     : Array.isArray(card.labelIds)
       ? (card.labelIds as unknown[]).map((labelId) => labelsById.get(Number(labelId))?.title || "").filter(Boolean)
       : [];
+
+  // Split the reserved priority label out of the normal labels.
+  let priority = "medium";
+  const normalLabels: string[] = [];
+  for (const title of labelTitles) {
+    const p = priorityFromLabelTitle(title);
+    if (p) priority = p;
+    else normalLabels.push(title);
+  }
 
   return {
     id: Number(card.id || 0),
@@ -1549,9 +1881,9 @@ function mapDeckCard(card: JsonObject, boardId: number, stackId: number, labelsB
     dueDate: card.duedate && typeof card.duedate === "string"
       ? new Date(String(card.duedate)).toISOString().slice(0, 10)
       : null,
-    assignee: assignedUser?.displayname || assignedUser?.uid || null,
-    priority: toDeckPriority(card),
-    labels: JSON.stringify(labelTitles),
+    assignee: assigneeUid,
+    priority,
+    labels: JSON.stringify(normalLabels),
     order: Number(card.order || 0),
   } satisfies DeckCardRecord;
 }
@@ -1591,6 +1923,19 @@ async function fetchDeckBoardDetail(session: NextcloudSession, boardId: number) 
     })
     .sort((a, b) => a.order - b.order);
 
+  // Assignable board members (owner + shared users). `board.users` already
+  // includes the owner and any acl/group-expanded users; fall back to the owner.
+  const memberSource = Array.isArray(board.users) && board.users.length
+    ? (board.users as JsonObject[])
+    : board.owner ? [board.owner as JsonObject] : [];
+  const seenUids = new Set<string>();
+  const members = memberSource
+    .map((u) => ({
+      uid: String(u.uid || u.primaryKey || ""),
+      displayName: String(u.displayname || u.uid || u.primaryKey || ""),
+    }))
+    .filter((m) => m.uid && !seenUids.has(m.uid) && seenUids.add(m.uid));
+
   return {
     board: {
       id: Number(board.id || 0),
@@ -1598,6 +1943,7 @@ async function fetchDeckBoardDetail(session: NextcloudSession, boardId: number) 
       color: String(board.color || "#4F46E5"),
     },
     stacks: mappedStacks,
+    members,
   };
 }
 
@@ -1646,6 +1992,33 @@ export async function createStack(session: NextcloudSession, boardId: number, ti
   };
 }
 
+export async function updateStack(session: NextcloudSession, boardId: number, stackId: number, title: string) {
+  // Deck's stack PUT requires the order too, so look up the current order first.
+  const detail = await fetchDeckBoardDetail(session, boardId);
+  const current = detail.stacks.find((s) => s.id === stackId);
+  const stack = await nextcloudJson<JsonObject>(session, `/index.php/apps/deck/api/v1.0/boards/${boardId}/stacks/${stackId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title, order: current?.order ?? 0 }),
+  });
+  return {
+    id: Number(stack.id || stackId),
+    boardId,
+    title: String(stack.title || title),
+    order: Number(stack.order ?? current?.order ?? 0),
+  };
+}
+
+export async function deleteStack(session: NextcloudSession, boardId: number, stackId: number) {
+  const response = await nextcloudFetch(session, `/index.php/apps/deck/api/v1.0/boards/${boardId}/stacks/${stackId}`, {
+    method: "DELETE",
+  });
+  if (!response.ok && response.status !== 404) {
+    throw new Error(`Deleting deck stack failed: ${response.status}`);
+  }
+  return true;
+}
+
 export async function createCard(session: NextcloudSession, boardId: number, stackId: number, input: Partial<DeckCardRecord> & { title: string }) {
   const card = await nextcloudJson<JsonObject>(
     session,
@@ -1678,12 +2051,6 @@ async function findCardLocation(session: NextcloudSession, cardId: number) {
   return null;
 }
 
-function normalizePriority(priority: string | null | undefined) {
-  if (priority === "high") return 4;
-  if (priority === "low") return 1;
-  return 2;
-}
-
 export async function updateCard(session: NextcloudSession, cardId: number, patch: Partial<DeckCardRecord>) {
   const location = await findCardLocation(session, cardId);
   if (!location) return null;
@@ -1697,18 +2064,29 @@ export async function updateCard(session: NextcloudSession, cardId: number, patc
     }
   })() : [];
 
+  // Deck's card PUT REQUIRES `type` and `owner`; omitting them returns 400. Fetch
+  // the raw card once to carry them through (and reuse it for label diffing below).
+  const cardPath = `/index.php/apps/deck/api/v1.0/boards/${board.id}/stacks/${stack.id}/cards/${cardId}`;
+  const rawCard = await nextcloudJson<JsonObject>(session, cardPath).catch(() => null);
+  const cardType = (rawCard && typeof rawCard.type === "string" && rawCard.type) || "plain";
+  const ownerRaw = rawCard?.owner as string | JsonObject | undefined;
+  const ownerUid =
+    (typeof ownerRaw === "string" ? ownerRaw : ownerRaw && typeof ownerRaw === "object" ? String(ownerRaw.uid || "") : "") ||
+    session.username;
+
   const updated = await nextcloudJson<JsonObject>(
     session,
-    `/index.php/apps/deck/api/v1.0/boards/${board.id}/stacks/${stack.id}/cards/${cardId}`,
+    cardPath,
     {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         title: patch.title ?? card.title,
+        type: cardType,
+        owner: ownerUid,
         description: patch.description ?? card.description ?? "",
         order: patch.order ?? card.order,
         duedate: patch.dueDate ? new Date(patch.dueDate).toISOString() : null,
-        priority: normalizePriority(patch.priority ?? card.priority),
       }),
     },
   );
@@ -1726,29 +2104,74 @@ export async function updateCard(session: NextcloudSession, cardId: number, patc
   }
 
   if (patch.assignee !== undefined) {
-    if (patch.assignee) {
-      await nextcloudJson(
-        session,
-        `/index.php/apps/deck/api/v1.0/boards/${board.id}/stacks/${patch.stackId || stack.id}/cards/${cardId}/assignUser`,
-        {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ userId: patch.assignee }),
-        },
-      ).catch(() => undefined);
+    const aPath = `/index.php/apps/deck/api/v1.0/boards/${board.id}/stacks/${patch.stackId || stack.id}/cards/${cardId}`;
+    const target = patch.assignee || null;
+    const currentAssignees = (Array.isArray(rawCard?.assignedUsers) ? (rawCard!.assignedUsers as JsonObject[]) : [])
+      .map((a) => String((a.participant as JsonObject | undefined)?.uid || ""))
+      .filter(Boolean);
+    // Single-assignee model: drop anyone who isn't the target, then assign the target.
+    for (const uid of currentAssignees) {
+      if (uid === target) continue;
+      await nextcloudJson(session, `${aPath}/unassignUser`, {
+        method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ userId: uid }),
+      }).catch(() => undefined);
+    }
+    if (target && !currentAssignees.includes(target)) {
+      await nextcloudJson(session, `${aPath}/assignUser`, {
+        method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ userId: target }),
+      }).catch(() => undefined);
     }
   }
 
-  for (const label of labels) {
-    await nextcloudJson(
-      session,
-      `/index.php/apps/deck/api/v1.0/boards/${board.id}/labels`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: label, color: "31CC7C" }),
-      },
-    ).catch(() => undefined);
+  // Sync the card's labels — both user labels AND the reserved priority label.
+  // Runs when either labels or priority change. Creates missing board labels,
+  // assigns newly-added ones, and removes dropped ones.
+  if (patch.labels !== undefined || patch.priority !== undefined) {
+    const rawBoard = await nextcloudJson<JsonObject>(session, `/index.php/apps/deck/api/v1.0/boards/${board.id}`).catch(() => null);
+    const boardLabels = Array.isArray(rawBoard?.labels)
+      ? (rawBoard!.labels as JsonObject[]).map((l) => ({ id: Number(l.id || 0), title: String(l.title || "") }))
+      : [];
+    const currentLabels = Array.isArray(rawCard?.labels)
+      ? (rawCard!.labels as JsonObject[]).map((l) => ({ id: Number(l.id || 0), title: String(l.title || "") }))
+      : [];
+
+    // Desired normal labels: from the patch if provided, else keep the card's current normal labels.
+    const desiredNormal = patch.labels !== undefined
+      ? labels
+      : currentLabels.map((l) => l.title).filter((t) => !priorityFromLabelTitle(t));
+    // Desired priority label: from the patch if provided, else keep the existing one.
+    const desiredPriorityTitle = patch.priority !== undefined
+      ? (PRIORITY_LABELS[patch.priority] ?? null)
+      : (currentLabels.map((l) => l.title).find((t) => priorityFromLabelTitle(t)) ?? null);
+
+    const desired = new Set([...desiredNormal, ...(desiredPriorityTitle ? [desiredPriorityTitle] : [])]);
+    const current = new Set(currentLabels.map((l) => l.title));
+
+    for (const title of desired) {
+      if (current.has(title)) continue;
+      const priorityKey = priorityFromLabelTitle(title);
+      let labelId = boardLabels.find((l) => l.title === title)?.id;
+      if (!labelId) {
+        const color = priorityKey ? PRIORITY_COLORS[priorityKey] : "31CC7C";
+        const created = await nextcloudJson<JsonObject>(
+          session,
+          `/index.php/apps/deck/api/v1.0/boards/${board.id}/labels`,
+          { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title, color }) },
+        ).catch(() => null);
+        labelId = created ? Number(created.id || 0) : undefined;
+      }
+      if (labelId) {
+        await nextcloudJson(session, `${cardPath}/assignLabel`, {
+          method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ labelId }),
+        }).catch(() => undefined);
+      }
+    }
+    for (const lbl of currentLabels) {
+      if (desired.has(lbl.title)) continue;
+      await nextcloudJson(session, `${cardPath}/removeLabel`, {
+        method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ labelId: lbl.id }),
+      }).catch(() => undefined);
+    }
   }
 
   return mapDeckCard(updated, board.id, patch.stackId || stack.id, new Map());
@@ -1932,11 +2355,21 @@ export async function getEmailCounts(session: NextcloudSession) {
   return { inbox, drafts, spam };
 }
 
+function toRecipientList(value: string | undefined) {
+  return (value || "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((email) => ({ label: email, email }));
+}
+
 export async function createEmail(session: NextcloudSession, input: {
   folder: string;
   subject: string;
   body: string;
   to: string;
+  cc?: string;
+  bcc?: string;
 }) {
   const accounts = await listMailAccountsSafe(session);
   const account = firstArrayItem(accounts);
@@ -1944,11 +2377,9 @@ export async function createEmail(session: NextcloudSession, input: {
     throw new Error("Nextcloud Mail has no configured account for this user");
   }
 
-  const recipients = input.to
-    .split(",")
-    .map((value) => value.trim())
-    .filter(Boolean)
-    .map((email) => ({ label: email, email }));
+  const recipients = toRecipientList(input.to);
+  const ccList = toRecipientList(input.cc);
+  const bccList = toRecipientList(input.bcc);
 
   if (input.folder === "drafts") {
     const draft = await nextcloudJson<JsonObject>(session, "/index.php/apps/mail/api/drafts", {
@@ -1963,8 +2394,8 @@ export async function createEmail(session: NextcloudSession, input: {
         smimeSign: false,
         smimeEncrypt: false,
         to: recipients,
-        cc: [],
-        bcc: [],
+        cc: ccList,
+        bcc: bccList,
         attachments: [],
       }),
     });
@@ -1997,8 +2428,8 @@ export async function createEmail(session: NextcloudSession, input: {
       smimeSign: false,
       smimeEncrypt: false,
       to: recipients,
-      cc: [],
-      bcc: [],
+      cc: ccList,
+      bcc: bccList,
       attachments: [],
     }),
   });
@@ -2061,4 +2492,20 @@ export async function deleteEmail(session: NextcloudSession, emailId: number) {
     throw new Error(`Deleting email failed: ${response.status}`);
   }
   return true;
+}
+
+// Move a message to another folder (real Nextcloud Mail move). The message id
+// changes after a move, so callers should treat the prior id as stale.
+// NOTE: not live-verified — needs an IMAP account configured on Nextcloud Mail.
+export async function moveEmail(session: NextcloudSession, emailId: number, folder: string) {
+  const target = await findMailboxForFolder(session, folder);
+  if (!target) {
+    throw new Error(`No Nextcloud Mail mailbox found for folder "${folder}"`);
+  }
+  await nextcloudJson(session, `/index.php/apps/mail/api/messages/${emailId}/move`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ destMailboxId: target.mailbox.id }),
+  });
+  return { success: true };
 }

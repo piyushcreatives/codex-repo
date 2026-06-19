@@ -1,9 +1,9 @@
-import { useState, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   format, startOfMonth, endOfMonth, eachDayOfInterval, startOfWeek,
   endOfWeek, isSameDay, isSameMonth, isToday, addMonths, subMonths,
-  parseISO, addDays, getHours, getMinutes,
+  parseISO, addDays, getHours, startOfDay, differenceInDays,
 } from "date-fns";
 import {
   ChevronLeft, ChevronRight, CalendarPlus, MapPin, Trash2, Clock, X,
@@ -138,25 +138,6 @@ function MiniCalendar({
   );
 }
 
-// ─── Event Chip ─────────────────────────────────────────────
-function EventChip({
-  event,
-  onClick,
-}: {
-  event: Event;
-  onClick: (e: React.MouseEvent) => void;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className="w-full rounded px-1.5 py-0.5 text-[11px] font-medium truncate cursor-pointer mb-0.5 text-left"
-      style={{ backgroundColor: `${event.color}20`, color: event.color }}
-    >
-      {event.title}
-    </button>
-  );
-}
-
 // ─── Event Detail Popover (as Dialog for simplicity) ────────
 function EventDetailDialog({
   event,
@@ -219,20 +200,32 @@ function EventFormDialog({
   open,
   onClose,
   initialData,
+  calendars,
   onSave,
 }: {
   open: boolean;
   onClose: () => void;
   initialData: EventFormData;
+  calendars: { name: string; color: string }[];
   onSave: (data: EventFormData) => void;
 }) {
   const [form, setForm] = useState(initialData);
+  useEffect(() => { setForm(initialData); }, [initialData]);
+
+  // Default a new event to the first real calendar when its calendar isn't one that exists.
+  useEffect(() => {
+    if (calendars.length && !calendars.some((c) => c.name === form.calendar)) {
+      setForm((prev) => ({ ...prev, calendar: calendars[0].name, color: calendars[0].color }));
+    }
+  }, [calendars, form.calendar]);
 
   const update = <K extends keyof EventFormData>(key: K, val: EventFormData[K]) =>
     setForm((prev) => ({
       ...prev,
       [key]: val,
-      ...(key === "calendar" ? { color: CALENDAR_COLORS[val as string] || "#4F46E5" } : {}),
+      ...(key === "calendar"
+        ? { color: calendars.find((c) => c.name === (val as string))?.color || prev.color || "#4F46E5" }
+        : {}),
     }));
 
   return (
@@ -281,17 +274,24 @@ function EventFormDialog({
               </div>
             )}
           </div>
-          <div>
-            <Label className="text-xs text-muted-foreground">Calendar</Label>
-            <Select value={form.calendar} onValueChange={(v) => update("calendar", v)}>
-              <SelectTrigger><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="Personal">Personal</SelectItem>
-                <SelectItem value="Work">Work</SelectItem>
-                <SelectItem value="Shared">Shared</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
+          {calendars.length > 0 && (
+            <div>
+              <Label className="text-xs text-muted-foreground">Calendar</Label>
+              <Select value={form.calendar} onValueChange={(v) => update("calendar", v)}>
+                <SelectTrigger><SelectValue placeholder="Select a calendar" /></SelectTrigger>
+                <SelectContent>
+                  {calendars.map((cal) => (
+                    <SelectItem key={cal.name} value={cal.name}>
+                      <span className="flex items-center gap-2">
+                        <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: cal.color }} />
+                        {cal.name}
+                      </span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
           <div className="relative">
             <MapPin size={14} className="absolute left-3 top-3 text-muted-foreground" />
             <Input
@@ -317,6 +317,57 @@ function EventFormDialog({
   );
 }
 
+// ─── Multi-day lane layout ──────────────────────────────────
+// Splits each event into per-week segments and assigns non-overlapping lanes so multi-day
+// events render as a continuous bar across the days they span.
+type WeekSegment = {
+  ev: Event;
+  startCol: number; // 0-6 within the week
+  endCol: number; // 0-6 within the week (inclusive)
+  continuesLeft: boolean; // started before this week
+  continuesRight: boolean; // ends after this week
+  lane: number;
+};
+
+function layoutWeek(weekDays: Date[], events: Event[]): WeekSegment[] {
+  const weekStart = startOfDay(weekDays[0]);
+  const weekEnd = startOfDay(weekDays[6]);
+
+  const segments: WeekSegment[] = [];
+  for (const ev of events) {
+    const start = startOfDay(parseISO(ev.startAt));
+    let end = startOfDay(parseISO(ev.endAt));
+    if (end < start) end = start;
+    if (end < weekStart || start > weekEnd) continue;
+    const segStart = start < weekStart ? weekStart : start;
+    const segEnd = end > weekEnd ? weekEnd : end;
+    segments.push({
+      ev,
+      startCol: differenceInDays(segStart, weekStart),
+      endCol: differenceInDays(segEnd, weekStart),
+      continuesLeft: start < weekStart,
+      continuesRight: end > weekEnd,
+      lane: 0,
+    });
+  }
+
+  // Longer / earlier events first, then greedily pack into lanes.
+  segments.sort(
+    (a, b) =>
+      a.startCol - b.startCol ||
+      (b.endCol - b.startCol) - (a.endCol - a.startCol) ||
+      a.ev.startAt.localeCompare(b.ev.startAt),
+  );
+  const laneLastCol: number[] = [];
+  for (const seg of segments) {
+    let lane = 0;
+    while (lane < laneLastCol.length && laneLastCol[lane] >= seg.startCol) lane++;
+    laneLastCol[lane] = seg.endCol;
+    seg.lane = lane;
+  }
+  return segments;
+}
+
 // ─── Month View ─────────────────────────────────────────────
 function MonthView({
   currentMonth,
@@ -329,21 +380,12 @@ function MonthView({
   onClickEvent: (e: Event, ev: React.MouseEvent) => void;
   onClickDay: (d: Date) => void;
 }) {
+  const MAX_LANES = 3;
   const monthStart = startOfMonth(currentMonth);
   const monthEnd = endOfMonth(currentMonth);
   const calStart = startOfWeek(monthStart);
   const calEnd = endOfWeek(monthEnd);
   const days = eachDayOfInterval({ start: calStart, end: calEnd });
-
-  const eventsByDate = useMemo(() => {
-    const map: Record<string, Event[]> = {};
-    events.forEach((ev) => {
-      const key = format(parseISO(ev.startAt), "yyyy-MM-dd");
-      if (!map[key]) map[key] = [];
-      map[key].push(ev);
-    });
-    return map;
-  }, [events]);
 
   const weeks: Date[][] = [];
   for (let i = 0; i < days.length; i += 7) {
@@ -357,42 +399,88 @@ function MonthView({
           <div key={d} className="text-xs font-medium text-muted-foreground text-center py-2">{d}</div>
         ))}
       </div>
-      <div className="flex-1 grid grid-cols-7 auto-rows-fr">
-        {weeks.flat().map((day) => {
-          const key = format(day, "yyyy-MM-dd");
-          const dayEvents = eventsByDate[key] || [];
-          const showMax = 3;
-          const extra = dayEvents.length - showMax;
+      <div className="flex-1 flex flex-col">
+        {weeks.map((weekDays, wi) => {
+          const segments = layoutWeek(weekDays, events);
+          const hiddenByDay = weekDays.map((_, col) =>
+            segments.filter((s) => s.lane >= MAX_LANES && s.startCol <= col && s.endCol >= col).length,
+          );
 
           return (
-            <div
-              key={key}
-              className={cn(
-                "border-r border-b p-1 min-h-0 overflow-hidden cursor-pointer hover:bg-muted/30 transition-colors",
-                !isSameMonth(day, currentMonth) && "bg-muted/10"
-              )}
-              onClick={() => onClickDay(day)}
-            >
-              <div className="flex justify-start mb-0.5">
-                {isToday(day) ? (
-                  <span className="w-7 h-7 bg-primary text-primary-foreground rounded-full flex items-center justify-center text-sm font-semibold">
-                    {format(day, "d")}
-                  </span>
-                ) : (
-                  <span className={cn(
-                    "w-7 h-7 flex items-center justify-center text-sm",
-                    !isSameMonth(day, currentMonth) && "text-muted-foreground/40"
-                  )}>
-                    {format(day, "d")}
-                  </span>
-                )}
-              </div>
-              <div className="space-y-0">
-                {dayEvents.slice(0, showMax).map((ev) => (
-                  <EventChip key={ev.id} event={ev} onClick={(e) => { e.stopPropagation(); onClickEvent(ev, e); }} />
+            <div key={wi} className="flex-1 min-h-0 border-b last:border-b-0 flex flex-col">
+              {/* Day numbers */}
+              <div className="grid grid-cols-7 flex-none">
+                {weekDays.map((day) => (
+                  <div
+                    key={day.toISOString()}
+                    className={cn("px-1 pt-1 border-r last:border-r-0", !isSameMonth(day, currentMonth) && "bg-muted/10")}
+                  >
+                    {isToday(day) ? (
+                      <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary text-xs font-semibold text-primary-foreground">
+                        {format(day, "d")}
+                      </span>
+                    ) : (
+                      <span className={cn("flex h-6 w-6 items-center justify-center text-xs", !isSameMonth(day, currentMonth) && "text-muted-foreground/40")}>
+                        {format(day, "d")}
+                      </span>
+                    )}
+                  </div>
                 ))}
-                {extra > 0 && (
-                  <p className="text-xs text-muted-foreground cursor-pointer pl-1">+{extra} more</p>
+              </div>
+
+              {/* Event lanes — multi-day events span columns via grid-column */}
+              <div
+                className="relative grid grid-cols-7 gap-y-0.5 px-0.5 pb-1 flex-1 min-h-0 overflow-hidden content-start"
+                style={{ gridAutoRows: "18px" }}
+              >
+                {/* Per-day click targets (create) sit behind the bars */}
+                {weekDays.map((day, col) => (
+                  <button
+                    key={`bg-${col}`}
+                    onClick={() => onClickDay(day)}
+                    aria-label={`Create event on ${format(day, "MMMM d")}`}
+                    className="rounded-sm hover:bg-muted/30 transition-colors"
+                    style={{ gridColumnStart: col + 1, gridColumnEnd: col + 2, gridRowStart: 1, gridRowEnd: MAX_LANES + 2 }}
+                  />
+                ))}
+
+                {/* Event bars */}
+                {segments
+                  .filter((seg) => seg.lane < MAX_LANES)
+                  .map((seg) => (
+                    <button
+                      key={`${seg.ev.id}-${wi}`}
+                      onClick={(e) => { e.stopPropagation(); onClickEvent(seg.ev, e); }}
+                      title={seg.ev.title}
+                      className="relative z-10 h-[18px] truncate rounded px-1.5 text-left text-[11px] font-medium leading-[18px]"
+                      style={{
+                        gridColumnStart: seg.startCol + 1,
+                        gridColumnEnd: seg.endCol + 2,
+                        gridRowStart: seg.lane + 1,
+                        backgroundColor: `${seg.ev.color}20`,
+                        color: seg.ev.color,
+                        ...(seg.continuesLeft ? { borderTopLeftRadius: 0, borderBottomLeftRadius: 0 } : {}),
+                        ...(seg.continuesRight ? { borderTopRightRadius: 0, borderBottomRightRadius: 0 } : {}),
+                      }}
+                    >
+                      {seg.continuesLeft ? "‹ " : ""}
+                      {seg.ev.title}
+                      {seg.continuesRight ? " ›" : ""}
+                    </button>
+                  ))}
+
+                {/* Overflow indicator per day */}
+                {hiddenByDay.map((count, col) =>
+                  count > 0 ? (
+                    <button
+                      key={`more-${col}`}
+                      onClick={() => onClickDay(weekDays[col])}
+                      className="relative z-10 h-[18px] truncate px-1 text-left text-[10px] text-muted-foreground hover:text-foreground"
+                      style={{ gridColumnStart: col + 1, gridColumnEnd: col + 2, gridRowStart: MAX_LANES + 1 }}
+                    >
+                      +{count} more
+                    </button>
+                  ) : null,
                 )}
               </div>
             </div>
@@ -417,7 +505,7 @@ function WeekView({
 }) {
   const weekStart = startOfWeek(selectedDate);
   const weekDays = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
-  const hours = Array.from({ length: 16 }, (_, i) => i + 7); // 7am - 10pm
+  const hours = Array.from({ length: 24 }, (_, i) => i); // full day so no events are hidden
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
@@ -435,7 +523,7 @@ function WeekView({
           {hours.map((hour) => (
             <div key={hour} className="contents">
               <div className="text-xs text-muted-foreground text-right pr-2 h-14 flex items-start justify-end pt-0.5">
-                {format(new Date(2026, 0, 1, hour), "h a")}
+                {format(new Date(2000, 0, 1, hour), "h a")}
               </div>
               {weekDays.map((d) => {
                 const dayKey = format(d, "yyyy-MM-dd");
@@ -483,7 +571,7 @@ function DayView({
 }) {
   const dayKey = format(selectedDate, "yyyy-MM-dd");
   const dayEvents = events.filter((ev) => format(parseISO(ev.startAt), "yyyy-MM-dd") === dayKey);
-  const hours = Array.from({ length: 16 }, (_, i) => i + 7);
+  const hours = Array.from({ length: 24 }, (_, i) => i); // full day so no events are hidden
 
   if (dayEvents.length === 0) {
     return (
@@ -504,7 +592,7 @@ function DayView({
           return (
             <div key={hour} className="contents">
               <div className="text-xs text-muted-foreground text-right pr-2 h-14 flex items-start justify-end pt-0.5">
-                {format(new Date(2026, 0, 1, hour), "h a")}
+                {format(new Date(2000, 0, 1, hour), "h a")}
               </div>
               <div className="border-l border-b h-14 relative p-0.5">
                 {hourEvents.map((ev) => (
@@ -588,7 +676,7 @@ export default function Calendar() {
   const queryClient = useQueryClient();
   const { toast, show: showToast } = useToast();
 
-  const [currentMonth, setCurrentMonth] = useState(new Date(2026, 3, 1)); // April 2026
+  const [currentMonth, setCurrentMonth] = useState(() => { const now = new Date(); return new Date(now.getFullYear(), now.getMonth(), 1); });
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [viewMode, setViewMode] = useState<ViewMode>("month");
   const [hiddenCalendars, setHiddenCalendars] = useState<Set<string>>(new Set());
@@ -612,44 +700,61 @@ export default function Calendar() {
     return set;
   }, [allEvents]);
 
+  // Real calendars come from the events themselves (Nextcloud sets each event's calendar
+  // name + color). This replaces the old hardcoded Personal/Work/Shared + fake Holidays list,
+  // so the show/hide filters actually match the data.
+  const calendars = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const e of allEvents) {
+      if (e.calendar && !map.has(e.calendar)) map.set(e.calendar, e.color || "#4F46E5");
+    }
+    return Array.from(map, ([name, color]) => ({ name, color }));
+  }, [allEvents]);
+
+  // Keep every calendar surface in sync after a write: the Calendar list, the
+  // Dashboard (upcoming events widget + mini calendar + count), and the TopBar bell.
+  const syncCalendarViews = () => {
+    queryClient.invalidateQueries({ queryKey: ["/api/events"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/dashboard"] });
+  };
+
+  const buildEventBody = (data: EventFormData) => ({
+    title: data.title,
+    // Timed events: interpret the entered date+time as LOCAL wall-clock and convert to a
+    // correct UTC instant, so it round-trips back to the same local time on display.
+    startAt: data.allDay
+      ? `${data.startDate}T00:00:00Z`
+      : new Date(`${data.startDate}T${data.startTime}:00`).toISOString(),
+    endAt: data.allDay
+      ? `${data.endDate}T23:59:59Z`
+      : new Date(`${data.endDate}T${data.endTime}:00`).toISOString(),
+    allDay: data.allDay,
+    calendar: data.calendar || undefined,
+    color: data.color,
+    location: data.location || undefined,
+    description: data.description || undefined,
+  });
+
   const createMutation = useMutation({
     mutationFn: async (data: EventFormData) => {
-      const body = {
-        title: data.title,
-        startAt: data.allDay ? `${data.startDate}T00:00:00Z` : `${data.startDate}T${data.startTime}:00Z`,
-        endAt: data.allDay ? `${data.endDate}T23:59:59Z` : `${data.endDate}T${data.endTime}:00Z`,
-        allDay: data.allDay,
-        calendar: data.calendar,
-        color: data.color,
-        location: data.location || undefined,
-        description: data.description || undefined,
-      };
-      await apiRequest("POST", "/api/events", body);
+      await apiRequest("POST", "/api/events", buildEventBody(data));
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/events"] });
+      syncCalendarViews();
       showToast("Event created");
     },
+    onError: (error) => showToast(error instanceof Error ? error.message : "Unable to create event."),
   });
 
   const updateMutation = useMutation({
     mutationFn: async ({ id, data }: { id: number; data: EventFormData }) => {
-      const body = {
-        title: data.title,
-        startAt: data.allDay ? `${data.startDate}T00:00:00Z` : `${data.startDate}T${data.startTime}:00Z`,
-        endAt: data.allDay ? `${data.endDate}T23:59:59Z` : `${data.endDate}T${data.endTime}:00Z`,
-        allDay: data.allDay,
-        calendar: data.calendar,
-        color: data.color,
-        location: data.location || undefined,
-        description: data.description || undefined,
-      };
-      await apiRequest("PATCH", `/api/events/${id}`, body);
+      await apiRequest("PATCH", `/api/events/${id}`, buildEventBody(data));
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/events"] });
+      syncCalendarViews();
       showToast("Event updated");
     },
+    onError: (error) => showToast(error instanceof Error ? error.message : "Unable to update event."),
   });
 
   const deleteMutation = useMutation({
@@ -657,11 +762,12 @@ export default function Calendar() {
       await apiRequest("DELETE", `/api/events/${id}`);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/events"] });
+      syncCalendarViews();
       setEventDetailOpen(false);
       setSelectedEvent(null);
       showToast("Event deleted");
     },
+    onError: (error) => showToast(error instanceof Error ? error.message : "Unable to delete event."),
   });
 
   const handleClickEvent = useCallback((ev: Event, _e: React.MouseEvent) => {
@@ -739,41 +845,26 @@ export default function Calendar() {
 
           <div className="flex-1 overflow-y-auto">
             <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide px-3 py-2">My Calendars</p>
-            {(["Personal", "Work", "Shared"] as const).map((cal) => (
-              <button
-                key={cal}
-                onClick={() => toggleCalendar(cal)}
-                className="flex items-center gap-2 px-3 py-1.5 w-full hover:bg-muted/60 transition-colors text-sm"
-              >
-                <span
-                  className="w-3 h-3 rounded-full border-2 shrink-0"
-                  style={{
-                    borderColor: CALENDAR_COLORS[cal],
-                    backgroundColor: hiddenCalendars.has(cal) ? "transparent" : CALENDAR_COLORS[cal],
-                  }}
-                />
-                <span className={hiddenCalendars.has(cal) ? "text-muted-foreground line-through" : ""}>{cal}</span>
-              </button>
-            ))}
-
-            <Separator className="my-2" />
-
-            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide px-3 py-2">Other calendars</p>
-            <button
-              onClick={() => toggleCalendar("Holidays")}
-              className="flex items-center gap-2 px-3 py-1.5 w-full hover:bg-muted/60 transition-colors text-sm"
-            >
-              <span
-                className="w-3 h-3 rounded-full border-2 shrink-0"
-                style={{
-                  borderColor: "#9CA3AF",
-                  backgroundColor: hiddenCalendars.has("Holidays") ? "transparent" : "#9CA3AF",
-                }}
-              />
-              <span className={hiddenCalendars.has("Holidays") ? "text-muted-foreground line-through" : ""}>
-                Holidays in India
-              </span>
-            </button>
+            {calendars.length === 0 ? (
+              <p className="px-3 py-1.5 text-sm text-muted-foreground">No calendars yet</p>
+            ) : (
+              calendars.map((cal) => (
+                <button
+                  key={cal.name}
+                  onClick={() => toggleCalendar(cal.name)}
+                  className="flex items-center gap-2 px-3 py-1.5 w-full hover:bg-muted/60 transition-colors text-sm"
+                >
+                  <span
+                    className="w-3 h-3 rounded-full border-2 shrink-0"
+                    style={{
+                      borderColor: cal.color,
+                      backgroundColor: hiddenCalendars.has(cal.name) ? "transparent" : cal.color,
+                    }}
+                  />
+                  <span className={hiddenCalendars.has(cal.name) ? "text-muted-foreground line-through" : ""}>{cal.name}</span>
+                </button>
+              ))
+            )}
           </div>
 
           <div className="p-3 border-t">
@@ -865,6 +956,7 @@ export default function Calendar() {
         open={eventDialogOpen}
         onClose={() => setEventDialogOpen(false)}
         initialData={eventFormData}
+        calendars={calendars}
         onSave={handleSaveEvent}
       />
     </>
