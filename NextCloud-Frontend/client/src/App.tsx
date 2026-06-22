@@ -6,9 +6,12 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { TopBar } from "@/components/layout/TopBar";
 import { fetchJson } from "@/lib/api";
+import { useRealtime } from "@/hooks/useRealtime";
 import { defaultCapabilities, type AppCapabilities } from "@/lib/capabilities";
+import { applyAppearance } from "@/lib/preferences";
 import Login from "@/pages/Login";
 import Dashboard from "@/pages/Dashboard";
+import Today from "@/pages/Today";
 import Files from "@/pages/Files";
 import Talk from "@/pages/Talk";
 import Calendar from "@/pages/Calendar";
@@ -62,6 +65,16 @@ function AppShell({ capabilities }: { capabilities: AppCapabilities }) {
   const [location] = useLocation();
   const [collapsed, setCollapsed] = useState(window.innerWidth < 1024);
   const [activeCapabilities, setActiveCapabilities] = useState(capabilities);
+  const queryClient = useQueryClient();
+
+  // App-wide real-time: keep one WebSocket open while signed in so new messages / unread
+  // badges update instantly on every page (not just Talk). Shares the conversations cache.
+  const { data: rtConversations } = useQuery({
+    queryKey: ["/api/conversations"],
+    queryFn: () => fetchJson<{ data: { id: number }[] }>("/api/conversations"),
+    enabled: activeCapabilities.talk,
+  });
+  useRealtime((rtConversations?.data || []).map((c) => c.id), queryClient);
 
   const handleResize = useCallback(() => {
     if (window.innerWidth < 768) {
@@ -110,6 +123,7 @@ function AppShell({ capabilities }: { capabilities: AppCapabilities }) {
           <div key={location} className="h-full animate-fade-in">
             <Switch>
               <Route path="/">{() => <Dashboard />}</Route>
+              <Route path="/today">{() => <Today />}</Route>
               <Route path="/files">{() => <Files />}</Route>
               <Route path="/talk">{() => activeCapabilities.talk ? <Talk /> : <FeatureUnavailable title="Talk is unavailable" detail="The Nextcloud Talk app is not enabled for this connection." />}</Route>
               <Route path="/calendar">{() => activeCapabilities.calendar ? <Calendar /> : <FeatureUnavailable title="Calendar is unavailable" detail="The Nextcloud Calendar app is not enabled for this connection." />}</Route>
@@ -222,6 +236,11 @@ function AppRoutes() {
 
 export default function App() {
   useTheme();
+
+  // Apply persisted appearance prefs (accent, font size, compact) on startup.
+  useEffect(() => {
+    applyAppearance();
+  }, []);
 
   return (
     <QueryClientProvider client={queryClient}>

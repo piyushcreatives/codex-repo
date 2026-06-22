@@ -10,10 +10,11 @@ import {
   ChevronRight, ChevronUp, ChevronDown, Reply, Forward, Copy, Download, Trash,
   FilePlus, FileIcon, FileImage, FileVideo, FileAudio, FileArchive,
   FileSpreadsheet, FileType, ArrowDown, Pause, Play, Maximize, Minimize,
-  UserRoundPlus, StopCircle, SignalHigh, Loader2,
+  UserRoundPlus, StopCircle, SignalHigh, Loader2, Pin, PinOff, CheckCheck,
 } from "lucide-react";
 import { cn, getAvatarColor, getInitials } from "@/lib/utils";
 import { apiRequest, fetchJson } from "@/lib/api";
+import { useCallNotes } from "@/hooks/useCallNotes";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
@@ -100,7 +101,7 @@ const ACTIVE_CONVERSATION_STORAGE_KEY = "cloudspace:talk:activeConversationId";
 
 // ── Timing constants (ms) ──
 /** How long to ring before auto-ending an unanswered call */
-const CALL_RING_TIMEOUT_MS = 30_000;
+const CALL_RING_TIMEOUT_MS = 60_000;
 /** How long the incoming-call banner stays before auto-dismissing */
 const INCOMING_CALL_DISMISS_MS = 15_000;
 /** Interval between ringtone tone bursts */
@@ -113,6 +114,14 @@ const MIN_CALL_AGE_FOR_AUTO_END_MS = 2_000;
 const MIN_GROUP_CALL_AGE_FOR_AUTO_END_MS = 5_000;
 /** Call duration counter tick */
 const CALL_DURATION_TICK_MS = 1_000;
+/** Seconds since last ping to consider user online */
+const ONLINE_THRESHOLD_SECS = 300;
+/** Seconds since last ping to consider user away */
+const AWAY_THRESHOLD_SECS = 120;
+/** Toast auto-dismiss duration */
+const TOAST_DISMISS_MS = 4_000;
+/** Consecutive message grouping threshold */
+const CONSECUTIVE_MSG_THRESHOLD_MS = 120_000;
 
 // ── Call overlay theme tokens ──
 const CALL_BG = "bg-[#1a1a1a]";
@@ -191,14 +200,14 @@ type UploadedTalkFile = {
 };
 
 function getPreferredConversationId(conversations: Conversation[]) {
-  const noteToSelf = conversations.find((conversation) => conversation.name === "Note to self");
+  const noteToSelf = conversations.find((conversation) => conversation.type === "note_to_self" || conversation.type === "changelog");
   if (noteToSelf) return noteToSelf.id;
 
   const firstDirectMessage = conversations.find((conversation) => conversation.type === "dm");
   if (firstDirectMessage) return firstDirectMessage.id;
 
-  const firstNonAnnouncement = conversations.find((conversation) => conversation.name !== "Talk updates ✅");
-  if (firstNonAnnouncement) return firstNonAnnouncement.id;
+  const firstNonSystem = conversations.find((conversation) => conversation.type !== "changelog");
+  if (firstNonSystem) return firstNonSystem.id;
 
   return conversations[0]?.id ?? null;
 }
@@ -211,7 +220,7 @@ function useToast() {
   const show = useCallback((message: string, action?: React.ReactNode) => {
     if (timerRef.current) clearTimeout(timerRef.current);
     setToast({ message, action });
-    timerRef.current = setTimeout(() => setToast(null), 4000);
+    timerRef.current = setTimeout(() => setToast(null), TOAST_DISMISS_MS);
   }, []);
   const dismiss = useCallback(() => {
     if (timerRef.current) clearTimeout(timerRef.current);
@@ -235,8 +244,6 @@ function ToastOverlay({ toast, onDismiss }: { toast: { message: string; action?:
     </div>
   );
 }
-
-// â"€â"€â"€ Mock members data â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // â"€â"€â"€ Types â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
@@ -349,47 +356,81 @@ function ConversationRow({
   conversation: c,
   isActive,
   onClick,
+  onTogglePin,
+  onToggleRead,
+  onToggleMute,
 }: {
   conversation: Conversation;
   isActive: boolean;
   onClick: () => void;
+  onTogglePin: () => void;
+  onToggleRead: () => void;
+  onToggleMute: () => void;
 }) {
+  const hasUnread = (c.unreadCount || 0) > 0;
   return (
-    <button
-      onClick={onClick}
+    <div
       className={cn(
-        "w-full flex items-center gap-3 cursor-pointer px-3 py-2.5 rounded-lg mx-1 text-left transition-colors",
-        isActive ? "bg-accent text-accent-foreground" : "hover:bg-muted/60"
+        "group relative mx-1 rounded-lg transition-colors",
+        isActive ? "bg-accent text-accent-foreground" : "hover:bg-muted/60",
       )}
     >
-      <div className="relative">
-        <Avatar name={c.name} size={38} isGroup={c.type === "group"} />
-        {/* Online dot removed from sidebar — shown only in chat header where we have real participant data */}
-      </div>
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-1.5 min-w-0">
-            <span className="text-sm font-medium truncate">{c.name}</span>
-            {c.isMuted && <BellOff size={12} className="text-muted-foreground/50 shrink-0" />}
+      <button onClick={onClick} className="flex w-full cursor-pointer items-center gap-3 px-3 py-2.5 text-left">
+        <div className="relative">
+          <Avatar name={c.name} size={38} isGroup={c.type === "group"} />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center justify-between">
+            <div className="flex min-w-0 items-center gap-1.5">
+              {c.isFavorite && <Pin size={12} className="shrink-0 fill-primary text-primary" />}
+              <span className="truncate text-sm font-medium">{c.name}</span>
+              {c.isMuted && <BellOff size={12} className="shrink-0 text-muted-foreground/50" />}
+            </div>
+            {c.lastMessageAt && (
+              <span className="ml-2 shrink-0 text-xs text-muted-foreground transition-opacity group-hover:opacity-0">
+                {formatRelativeTime(c.lastMessageAt)}
+              </span>
+            )}
           </div>
-          {c.lastMessageAt && (
-            <span className="text-xs text-muted-foreground shrink-0 ml-2">
-              {formatRelativeTime(c.lastMessageAt)}
-            </span>
-          )}
+          <div className="flex items-center justify-between">
+            <span className="truncate text-xs text-muted-foreground">{c.lastMessage || "No messages yet"}</span>
+            {hasUnread && (
+              <span className="ml-2 min-w-[18px] shrink-0 rounded-full bg-primary px-1.5 text-center text-[10px] text-white">
+                {c.unreadCount}
+              </span>
+            )}
+          </div>
         </div>
-        <div className="flex items-center justify-between">
-          <span className="text-xs text-muted-foreground truncate">
-            {c.lastMessage || "No messages yet"}
-          </span>
-          {(c.unreadCount || 0) > 0 && (
-            <span className="bg-primary text-white text-[10px] rounded-full px-1.5 min-w-[18px] text-center shrink-0 ml-2">
-              {c.unreadCount}
-            </span>
-          )}
-        </div>
+      </button>
+
+      {/* Hover actions */}
+      <div className="absolute right-2 top-2 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              onClick={(e) => e.stopPropagation()}
+              aria-label="Conversation options"
+              className="rounded-md bg-background/90 p-1 text-muted-foreground shadow-sm hover:bg-muted hover:text-foreground"
+            >
+              <MoreHorizontal size={15} />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onClick={onTogglePin}>
+              {c.isFavorite ? <><PinOff size={15} className="mr-2" /> Unpin</> : <><Pin size={15} className="mr-2" /> Pin to top</>}
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={onToggleRead}>
+              {hasUnread
+                ? <><CheckCheck size={15} className="mr-2" /> Mark as read</>
+                : <><span className="mr-2 inline-block h-2 w-2 rounded-full bg-primary" /> Mark as unread</>}
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={onToggleMute}>
+              {c.isMuted ? <><Bell size={15} className="mr-2" /> Unmute</> : <><BellOff size={15} className="mr-2" /> Mute</>}
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
-    </button>
+    </div>
   );
 }
 
@@ -445,10 +486,12 @@ function AttachmentBubble({ name, path, isSent, shareLink }: { name: string; pat
     void tryFetch();
     return () => {
       cancelled = true;
-      // Revoke the blob URL on cleanup to prevent memory leaks
-      if (previewSrc) URL.revokeObjectURL(previewSrc);
     };
   }, [downloadUrl, shareDownloadUrl, isImage, previewFailed]);
+
+  useEffect(() => {
+    return () => { if (previewSrc) URL.revokeObjectURL(previewSrc); };
+  }, [previewSrc]);
 
   const handleDownload = async () => {
     try {
@@ -609,7 +652,7 @@ function MessageBubble({
 }) {
   const [showActions, setShowActions] = useState(false);
   const [showReactions, setShowReactions] = useState(false);
-  const reactions = m.reactions ? JSON.parse(m.reactions) as Record<string, number> : null;
+  const reactions = (() => { try { return m.reactions ? JSON.parse(m.reactions) as Record<string, number> : null; } catch { return null; } })();
   const normalizedSearch = searchQuery.trim().toLowerCase();
   const matchesSearch =
     normalizedSearch.length > 0 &&
@@ -700,7 +743,7 @@ function MessageBubble({
         </Tooltip>
         <Tooltip>
           <TooltipTrigger asChild>
-            <button onClick={() => { navigator.clipboard.writeText(m.content); setShowActions(false); }} className="h-7 w-7 rounded flex items-center justify-center hover:bg-muted text-muted-foreground">
+            <button onClick={() => { void navigator.clipboard.writeText(m.content).catch(() => undefined); setShowActions(false); }} className="h-7 w-7 rounded flex items-center justify-center hover:bg-muted text-muted-foreground">
               <Copy size={14} />
             </button>
           </TooltipTrigger>
@@ -1184,8 +1227,8 @@ function VoiceCallOverlay({ callState, onUpdate, onEnd, onScreenShare, onAddPart
       {/* Teams toolbar */}
       <TeamsCallToolbar
         isMuted={callState.isMuted}
-        isVideoOff={true}
-        isScreenSharing={false}
+        isVideoOff={callState.isVideoOff !== false}
+        isScreenSharing={callState.isScreenSharing ?? false}
         showPeoplePanel={showPeoplePanel}
         onToggleMute={() => onUpdate({ isMuted: !callState.isMuted })}
         onToggleVideo={() => onUpdate({ isVideoOff: false })}
@@ -1325,35 +1368,47 @@ function RemoteAudioRenderer({
 
   useEffect(() => {
     const element = ref.current;
-    if (!element) return;
+    if (!element || !stream) return;
 
     element.srcObject = stream;
     element.muted = muted;
+    element.volume = 1.0;
 
     const playAudio = () => {
-      if (stream) {
-        void element.play().catch(() => undefined);
-      }
+      if (!stream) return;
+      const audioTracks = stream.getAudioTracks();
+      if (audioTracks.length === 0) return;
+      element.srcObject = stream;
+      element.muted = muted;
+      void element.play().catch((err) => {
+        if (err.name === "NotAllowedError") {
+          const resumeOnClick = () => {
+            void element.play().catch(() => undefined);
+            document.removeEventListener("click", resumeOnClick);
+          };
+          document.addEventListener("click", resumeOnClick, { once: true });
+        }
+      });
     };
 
     playAudio();
 
-    if (!stream) return;
-
-    const handleTrackAdded = () => {
-      playAudio();
-    };
-
-    const handleTrackUnmuted = () => {
-      playAudio();
-    };
+    const handleTrackAdded = () => playAudio();
+    const handleTrackUnmuted = () => playAudio();
 
     stream.addEventListener("addtrack", handleTrackAdded);
     for (const track of stream.getAudioTracks()) {
       track.addEventListener("unmute", handleTrackUnmuted);
     }
 
+    const retryTimer = setInterval(() => {
+      if (element.paused && stream.getAudioTracks().length > 0) {
+        playAudio();
+      }
+    }, 2000);
+
     return () => {
+      clearInterval(retryTimer);
       stream.removeEventListener("addtrack", handleTrackAdded);
       for (const track of stream.getAudioTracks()) {
         track.removeEventListener("unmute", handleTrackUnmuted);
@@ -1384,11 +1439,7 @@ function VideoCallOverlay({ callState, onUpdate, onEnd, currentUserName, current
   const [showPeoplePanel, setShowPeoplePanel] = useState(false);
   // Pin a specific user's video to the main area — "screen" = screenshare, username = that user's camera, null = default
   const [pinnedView, setPinnedView] = useState<string | null>(null);
-  const [callElapsed, setCallElapsed] = useState(0);
-  useEffect(() => {
-    const timer = setInterval(() => setCallElapsed((e) => e + 1), 1000);
-    return () => clearInterval(timer);
-  }, []);
+  const callElapsed = callState.duration ?? 0;
 
   const joinedRemoteMedia = callState.participants
     .filter((participant) => participant.username !== currentUsername && participant.status === "joined")
@@ -1676,10 +1727,7 @@ function VideoCallOverlay({ callState, onUpdate, onEnd, currentUserName, current
             // Dynamic grid: 1→1col, 2→2col, 3-4→2col, 5-6→3col, 7-9→3col, 10+→4col
             const gridCols =
               count <= 1 ? "grid-cols-1" :
-              count === 2 ? "grid-cols-2" :
-              count === 3 ? "grid-cols-3" :
               count <= 4 ? "grid-cols-2" :
-              count <= 6 ? "grid-cols-3" :
               count <= 9 ? "grid-cols-3" :
               "grid-cols-4";
             // Adapt avatar size based on grid density
@@ -1743,10 +1791,10 @@ function VideoCallOverlay({ callState, onUpdate, onEnd, currentUserName, current
                           <span className={cn(
                             "text-[10px] px-2 py-0.5 rounded w-fit",
                             p.status === "joined" ? "bg-green-500/80 text-white" :
-                            p.status === "ringing" ? (callElapsed > 30 ? "bg-red-500/80 text-white" : "bg-yellow-500/80 text-white") :
+                            p.status === "ringing" ? (callElapsed > CALL_RING_TIMEOUT_MS / 1000 ? "bg-red-500/80 text-white" : "bg-yellow-500/80 text-white") :
                             "bg-white/20 text-white/60"
                           )}>
-                            {p.status === "joined" ? "Connected" : p.status === "ringing" ? (callElapsed > 30 ? "No answer" : "Ringing...") : p.status}
+                            {p.status === "joined" ? "Connected" : p.status === "ringing" ? (callElapsed > CALL_RING_TIMEOUT_MS / 1000 ? "No answer" : "Ringing...") : p.status}
                           </span>
                         )}
                       </div>
@@ -1920,7 +1968,7 @@ function InfoPanel({
   }));
   const dmParticipant = members.find((member) => member.name !== currentUserName) || members[0] || null;
   const infoPanelDmOnline = dmParticipant
-    ? (dmParticipant.status === "online" || dmParticipant.status === "away" || dmParticipant.status === "dnd" || (dmParticipant.lastPing > 0 && (Date.now() / 1000 - dmParticipant.lastPing) < 300))
+    ? (dmParticipant.status === "online" || dmParticipant.status === "away" || dmParticipant.status === "dnd" || (dmParticipant.lastPing > 0 && (Date.now() / 1000 - dmParticipant.lastPing) < ONLINE_THRESHOLD_SECS))
     : false;
   // Check admin status by display name, username, or ID (covers all possible matching)
   const isAdmin = members.some((m) =>
@@ -2010,9 +2058,9 @@ function InfoPanel({
             <div className="space-y-2">
               {members.map((member) => {
                 const memberOnline = member.status === "online" || member.status === "away" || member.status === "dnd"
-                  || (member.lastPing > 0 && (Date.now() / 1000 - member.lastPing) < 300);
+                  || (member.lastPing > 0 && (Date.now() / 1000 - member.lastPing) < ONLINE_THRESHOLD_SECS);
                 return (
-                <div key={member.name} className="group flex items-center gap-2">
+                <div key={member.username || member.name} className="group flex items-center gap-2">
                   <div className="relative">
                     <Avatar name={member.name} size={36} />
                     <OnlineDot size={6} className="absolute bottom-0 right-0" isOnline={memberOnline} />
@@ -2139,10 +2187,10 @@ function InfoPanel({
           <div className="space-y-1">
             {otherMembers.map((m) => {
               const memberId = m.id;
-              const isSelected = selectedTransferMember?.name === m.name;
+              const isSelected = selectedTransferMember?.id === memberId;
               return (
                 <button
-                  key={m.name}
+                  key={m.username || m.name}
                   onClick={() => setSelectedTransferMember({ id: memberId, name: m.name })}
                   className={cn(
                     "w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors",
@@ -2305,6 +2353,112 @@ function InfoPanel({
 
 // â"€â"€â"€ Main Talk Page â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
+// Post-call dialog: turn extracted action items into Calendar reminders and/or Deck cards.
+function ActionItemsDialog({
+  items,
+  boards,
+  onClose,
+  onAddToCalendar,
+  onAddToDeck,
+}: {
+  items: string[];
+  boards: { id: number; title: string }[];
+  onClose: () => void;
+  onAddToCalendar: (selected: string[], date: string) => Promise<void>;
+  onAddToDeck: (selected: string[], boardId: number) => Promise<void>;
+}) {
+  const [selected, setSelected] = useState<Set<number>>(() => new Set(items.map((_, i) => i)));
+  const [date, setDate] = useState(() => new Date(Date.now() + 86_400_000).toISOString().slice(0, 10));
+  const [boardId, setBoardId] = useState<number | "">(() => boards[0]?.id ?? "");
+  const [busy, setBusy] = useState<"calendar" | "deck" | null>(null);
+
+  const toggle = (i: number) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(i)) next.delete(i);
+      else next.add(i);
+      return next;
+    });
+
+  const chosen = () => items.filter((_, i) => selected.has(i));
+
+  return (
+    <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
+      <DialogContent className="sm:max-w-[480px]">
+        <DialogHeader>
+          <DialogTitle>Action items from the meeting</DialogTitle>
+        </DialogHeader>
+        <p className="text-sm text-muted-foreground">Pick the ones to turn into tasks.</p>
+        <div className="max-h-[260px] space-y-1 overflow-y-auto">
+          {items.map((item, i) => (
+            <label key={i} className="flex cursor-pointer items-start gap-2 rounded-lg px-2 py-1.5 hover:bg-muted/50">
+              <input type="checkbox" checked={selected.has(i)} onChange={() => toggle(i)} className="mt-1 shrink-0" />
+              <span className="text-sm">{item}</span>
+            </label>
+          ))}
+        </div>
+
+        {/* Calendar */}
+        <div className="flex items-center justify-between gap-2 rounded-lg border p-2.5">
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-muted-foreground">Calendar due</span>
+            <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="h-9 w-auto" />
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={busy !== null || selected.size === 0}
+            onClick={async () => {
+              setBusy("calendar");
+              await onAddToCalendar(chosen(), date);
+              setBusy(null);
+            }}
+          >
+            {busy === "calendar" ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : null}
+            Add to Calendar
+          </Button>
+        </div>
+
+        {/* Deck */}
+        {boards.length > 0 && (
+          <div className="flex items-center justify-between gap-2 rounded-lg border p-2.5">
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-muted-foreground">Deck board</span>
+              <select
+                value={boardId}
+                onChange={(e) => setBoardId(Number(e.target.value))}
+                className="h-9 rounded-md border bg-background px-2 text-sm"
+              >
+                {boards.map((b) => (
+                  <option key={b.id} value={b.id}>{b.title}</option>
+                ))}
+              </select>
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={busy !== null || selected.size === 0 || boardId === ""}
+              onClick={async () => {
+                if (boardId === "") return;
+                setBusy("deck");
+                await onAddToDeck(chosen(), boardId);
+                setBusy(null);
+              }}
+            >
+              {busy === "deck" ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : null}
+              Add to Deck
+            </Button>
+          </div>
+        )}
+
+        <div className="flex justify-end pt-1">
+          <Button variant="ghost" onClick={onClose}>Done</Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function TalkInner() {
   const queryClient = useQueryClient();
   const { toast, show: showToast, dismiss: dismissToast } = useToast();
@@ -2335,11 +2489,13 @@ function TalkInner() {
   const [pendingAttachment, setPendingAttachment] = useState<{ file: File; previewUrl: string | null } | null>(null);
   const [isRemoteScreenSharing, setIsRemoteScreenSharing] = useState(false);
   const [callMinimized, setCallMinimized] = useState(false);
+  const [callNotesEnabled, setCallNotesEnabled] = useState(false);
   const [callEndedInfo, setCallEndedInfo] = useState<{ duration: string; reason: string } | null>(null);
   const [searchMatchIndex, setSearchMatchIndex] = useState(0);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const prevMessageCountRef = useRef(0);
+  const markedReadConversationRef = useRef<number | null>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const attachmentInputRef = useRef<HTMLInputElement>(null);
@@ -2360,7 +2516,7 @@ function TalkInner() {
   const processedCandidateIdsRef = useRef<Set<string>>(new Set());
   const sawActiveSignalRef = useRef<Set<number>>(new Set());
   const recentlyEndedCallRef = useRef<Map<number, number>>(new Map()); // conversationId → timestamp when we ended
-  const latestIceServersRef = useRef<Array<{ urls: string | string[]; username?: string; credential?: string }>>([{ urls: "stun:stun.l.google.com:19302" }]);
+  const latestIceServersRef = useRef<Array<{ urls: string | string[]; username?: string; credential?: string }>>([]);
   const ringingExpiredUsernamesRef = useRef<Set<string>>(new Set()); // usernames whose ringing timed out — prevents server poll from bringing them back
 
   // Queries
@@ -2373,6 +2529,7 @@ function TalkInner() {
 
   const conversations = conversationsData?.data || [];
   const liveActiveConversation = conversations.find((c) => c.id === activeConversationId);
+  // Real-time is handled app-wide in AppShell (single WebSocket) — see useRealtime there.
 
   // ── Kicked / removed user support ──
   // When a user is kicked, Nextcloud removes the conversation from the API.
@@ -2420,6 +2577,149 @@ function TalkInner() {
   const currentUserId = currentUserData?.data?.id || 0;
   const currentUserName = currentUserData?.data?.name || "You";
   const currentUsername = currentUserData?.data?.username || currentUserName;
+
+  // AI call notes — each participant transcribes its own speech and posts lines to a
+  // shared per-call buffer, so the merged result is a true multi-speaker transcript.
+  const pendingTranscriptLinesRef = useRef<{ speaker: string; text: string; at: string }[]>([]);
+  const [pendingActionItems, setPendingActionItems] = useState<string[] | null>(null);
+
+  const flushTranscriptLines = useCallback(async (conversationId: number) => {
+    const lines = pendingTranscriptLinesRef.current;
+    if (!lines.length) return;
+    pendingTranscriptLinesRef.current = [];
+    try {
+      await apiRequest("POST", `/api/conversations/${conversationId}/call/transcript`, { lines });
+    } catch {
+      /* drop on failure */
+    }
+  }, []);
+
+  const callNotes = useCallNotes({
+    active: !!callState?.active,
+    enabled: callNotesEnabled,
+    speaker: currentUserName,
+    onFinalText: (text, at) => {
+      pendingTranscriptLinesRef.current.push({ speaker: currentUserName, text, at });
+    },
+  });
+
+  // Periodically push this participant's transcript lines to the shared call buffer.
+  useEffect(() => {
+    const convId = callState?.conversationId;
+    if (!(callState?.active && callNotesEnabled && convId)) return;
+    const id = setInterval(() => { void flushTranscriptLines(convId); }, 3000);
+    return () => clearInterval(id);
+  }, [callState?.active, callState?.conversationId, callNotesEnabled, flushTranscriptLines]);
+
+  // Summarize a transcript into structured notes and save them to the Notes page.
+  async function saveMeetingNotes(opts: {
+    conversationName: string;
+    transcript: string;
+    durationSec: number;
+    participants: string[];
+  }) {
+    const dateLabel = new Date().toLocaleDateString();
+    const noteTitle = `Meeting notes — ${opts.conversationName} — ${dateLabel}`;
+    try {
+      showToast("Generating meeting notes…");
+      const summary = await fetchJson<{ data: { title: string; markdown: string; actionItems: string[] } }>(
+        "/api/ai/meeting-notes",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: noteTitle,
+            transcript: opts.transcript,
+            participants: opts.participants,
+            durationSec: opts.durationSec,
+            occurredAt: new Date().toISOString(),
+          }),
+        },
+      );
+      const now = new Date().toISOString();
+      await apiRequest("POST", "/api/notes", {
+        title: summary.data.title,
+        content: summary.data.markdown,
+        tags: "[]",
+        updatedAt: now,
+        createdAt: now,
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/notes"] });
+      showToast("Meeting notes saved to Notes ✓");
+      if (summary.data.actionItems?.length) setPendingActionItems(summary.data.actionItems);
+    } catch {
+      showToast("Couldn’t save meeting notes.");
+    }
+  }
+
+  // Turn selected action items into Calendar reminders (syncs to Dashboard too).
+  const addActionItemsToCalendar = useCallback(
+    async (selectedItems: string[], date: string) => {
+      let created = 0;
+      for (const item of selectedItems) {
+        try {
+          await apiRequest("POST", "/api/events", {
+            title: item.slice(0, 200),
+            startAt: new Date(`${date}T09:00:00`).toISOString(),
+            endAt: new Date(`${date}T09:30:00`).toISOString(),
+            allDay: false,
+            description: "Action item from a Talk meeting.",
+          });
+          created++;
+        } catch {
+          /* skip this one */
+        }
+      }
+      queryClient.invalidateQueries({ queryKey: ["/api/events"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/dashboard"] });
+      showToast(created ? `Added ${created} reminder${created === 1 ? "" : "s"} to Calendar ✓` : "Couldn’t add reminders.");
+    },
+    [queryClient, showToast],
+  );
+
+  // Deck boards (only fetched while the action-items dialog is open). Empty if Deck is unavailable.
+  const { data: deckBoardsData } = useQuery({
+    queryKey: ["/api/boards"],
+    queryFn: () =>
+      fetchJson<{ data: { id: number; title: string; color: string }[] }>("/api/boards")
+        .then((r) => r.data)
+        .catch(() => [] as { id: number; title: string; color: string }[]),
+    enabled: !!pendingActionItems,
+  });
+  const deckBoards = Array.isArray(deckBoardsData) ? deckBoardsData : [];
+
+  // Turn selected action items into Deck cards in the chosen board's first stack.
+  const addActionItemsToDeck = useCallback(
+    async (selectedItems: string[], boardId: number) => {
+      try {
+        const board = await fetchJson<{ data: { stacks?: { id: number }[] } }>(`/api/boards/${boardId}`).then((r) => r.data);
+        let stackId = board.stacks?.[0]?.id;
+        if (!stackId) {
+          const createdStack = await fetchJson<{ data: { id: number } }>(`/api/boards/${boardId}/stacks`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ title: "To Do", order: 0 }),
+          });
+          stackId = createdStack.data.id;
+        }
+        let created = 0;
+        for (const item of selectedItems) {
+          try {
+            await apiRequest("POST", `/api/boards/${boardId}/stacks/${stackId}/cards`, { title: item.slice(0, 255) });
+            created++;
+          } catch {
+            /* skip this one */
+          }
+        }
+        queryClient.invalidateQueries({ queryKey: ["/api/boards"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/boards", boardId] });
+        showToast(created ? `Added ${created} card${created === 1 ? "" : "s"} to Deck ✓` : "Couldn’t add cards.");
+      } catch {
+        showToast("Couldn’t add to Deck.");
+      }
+    },
+    [queryClient, showToast],
+  );
   const { data: usersData } = useQuery({
     queryKey: ["/api/users/search"],
     queryFn: () => fetchJson<{ data: TalkDirectoryUser[] }>("/api/users/search"),
@@ -2469,14 +2769,14 @@ function TalkInner() {
   // status field as secondary. Nextcloud status is often null unless explicitly set by user.
   const isDmPartnerOnline = dmPartner
     ? (
-        (dmPartner.lastPing > 0 && (Date.now() / 1000 - dmPartner.lastPing) < 300) ||
+        (dmPartner.lastPing > 0 && (Date.now() / 1000 - dmPartner.lastPing) < ONLINE_THRESHOLD_SECS) ||
         dmPartner.status === "online" ||
         dmPartner.status === "away" ||
         dmPartner.status === "dnd"
       )
     : false;
   const isDmPartnerAway = dmPartner
-    ? (dmPartner.status === "away" || (isDmPartnerOnline && dmPartner.lastPing > 0 && (Date.now() / 1000 - dmPartner.lastPing) > 120))
+    ? (dmPartner.status === "away" || (isDmPartnerOnline && dmPartner.lastPing > 0 && (Date.now() / 1000 - dmPartner.lastPing) > AWAY_THRESHOLD_SECS))
     : false;
 
   const { data: callSignalData } = useQuery({
@@ -2807,21 +3107,23 @@ function TalkInner() {
   }
 
   function syncPeerConnectionTracks(connection: RTCPeerConnection, stream: MediaStream) {
-    const senders = connection.getSenders();
     const videoTrack = stream.getVideoTracks()[0] || null;
     const audioTrack = stream.getAudioTracks()[0] || null;
 
-    const videoSender = senders.find((sender) => sender.track?.kind === "video");
-    const audioSender = senders.find((sender) => sender.track?.kind === "audio");
+    // Use transceivers to find senders by media kind — sender.track can be
+    // null after replaceTrack(null), but receiver.track.kind is always reliable.
+    const transceivers = connection.getTransceivers();
+    const videoTransceiver = transceivers.find((t) => t.receiver.track?.kind === "video");
+    const audioTransceiver = transceivers.find((t) => t.receiver.track?.kind === "audio");
 
-    if (videoSender) {
-      void videoSender.replaceTrack(videoTrack);
+    if (videoTransceiver) {
+      void videoTransceiver.sender.replaceTrack(videoTrack);
     } else if (videoTrack) {
       connection.addTrack(videoTrack, stream);
     }
 
-    if (audioSender) {
-      void audioSender.replaceTrack(audioTrack);
+    if (audioTransceiver) {
+      void audioTransceiver.sender.replaceTrack(audioTrack);
     } else if (audioTrack) {
       connection.addTrack(audioTrack, stream);
     }
@@ -3190,8 +3492,9 @@ function TalkInner() {
           (p) => p.username !== currentUsername && (p.status === "left" || p.status === "declined")
         );
 
-        // DM calls: end immediately when other participant leaves (lower threshold)
-        if (isDmCall && joinedCount <= 1 && otherLeft && callAge > MIN_CALL_AGE_FOR_AUTO_END_MS) {
+        // DM calls: end when you're the only one left (no need to check otherLeft — in DM, if only 1 joined it means the other person left or never joined)
+        const otherJoinedInDm = callSignal.participants.filter((p) => p.username !== currentUsername && p.status === "joined");
+        if (isDmCall && otherJoinedInDm.length === 0 && callAge > MIN_CALL_AGE_FOR_AUTO_END_MS) {
           recentlyEndedCallRef.current.set(activeConversationId, Date.now());
           setTimeout(() => recentlyEndedCallRef.current.delete(activeConversationId), RECENTLY_ENDED_SUPPRESS_MS);
           sawActiveSignalRef.current.delete(activeConversationId);
@@ -3260,7 +3563,7 @@ function TalkInner() {
     }
   }, [activeConversationId, callSignal, callSignalData, callState?.active, callState?.conversationId, currentUsername, showToast]);
 
-  // Group call ringing timeout: after 40s, stop showing ringing participants
+  // Group call ringing timeout: after 60s, stop showing ringing participants
   useEffect(() => {
     if (!callState?.active) return;
     if (activeConversation?.type !== "group") return;
@@ -3270,7 +3573,6 @@ function TalkInner() {
         if (!prev) return prev;
         const hasRinging = prev.participants.some((p) => p.status === "ringing");
         if (!hasRinging) return prev;
-        // Track expired usernames so server poll doesn't bring them back as "ringing"
         prev.participants.forEach((p) => {
           if (p.status === "ringing") ringingExpiredUsernamesRef.current.add(p.username);
         });
@@ -3281,7 +3583,7 @@ function TalkInner() {
           ),
         };
       });
-    }, 40_000);
+    }, CALL_RING_TIMEOUT_MS);
     return () => clearTimeout(timer);
   }, [callState?.active, activeConversation?.type]);
 
@@ -3337,6 +3639,43 @@ function TalkInner() {
     // Capture values BEFORE any state changes
     const dur = callState ? formatCallDuration(callState.duration) : "0:00";
     const convId = callState?.conversationId;
+
+    // 0. AI meeting notes — fetch the merged multi-speaker transcript, then summarize + save.
+    if (callNotesEnabled) {
+      const notesConvId = callState?.conversationId;
+      const conversationName = activeConversation?.name || callState?.conversationName || "Call";
+      const durationSec = callState?.duration ?? 0;
+      const localTranscript = callNotes.getTranscript();
+      const localParticipants = Array.from(
+        new Set([currentUserName, dmPartner?.name].filter(Boolean) as string[]),
+      );
+      callNotes.reset();
+      void (async () => {
+        let transcript = localTranscript;
+        let participants = localParticipants;
+        if (notesConvId) {
+          await flushTranscriptLines(notesConvId);
+          // Give other participants a moment to flush their final lines.
+          await new Promise((resolve) => setTimeout(resolve, 1200));
+          try {
+            const merged = await fetchJson<{ data: { speaker: string; text: string; at: string }[] }>(
+              `/api/conversations/${notesConvId}/call/transcript`,
+            );
+            if (merged.data?.length) {
+              transcript = merged.data
+                .map((l) => `[${new Date(l.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}] ${l.speaker}: ${l.text}`)
+                .join("\n");
+              participants = Array.from(new Set(merged.data.map((l) => l.speaker)));
+            }
+          } catch {
+            /* fall back to local transcript */
+          }
+        }
+        if (transcript.trim()) {
+          await saveMeetingNotes({ conversationName, transcript, durationSec, participants });
+        }
+      })();
+    }
 
     // 1. Suppress re-ring FIRST (synchronous ref writes are safe)
     if (convId) {
@@ -3406,6 +3745,35 @@ function TalkInner() {
       }
 
       await replaceLocalStream(combinedStream, conversationId, true);
+
+      // ── If camera was ON before screenshare, re-add it as secondary track ──
+      const prevStream = previousLocalStreamRef.current;
+      const hadCamera = prevStream && prevStream.getVideoTracks().some((t) => t.readyState === "live");
+      if (hadCamera) {
+        try {
+          const camStream = await navigator.mediaDevices.getUserMedia({ video: true });
+          const camTrack = camStream.getVideoTracks()[0];
+          if (camTrack) {
+            liveCameraStreamRef.current = camStream;
+            previousLocalStreamRef.current = camStream;
+            for (const [peerUsername, connection] of peerConnectionsRef.current.entries()) {
+              const sender = connection.addTrack(camTrack, camStream);
+              cameraSendersRef.current.set(peerUsername, sender);
+              try {
+                const offer = await connection.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true });
+                await connection.setLocalDescription(offer);
+                await apiRequest("PATCH", `/api/conversations/${conversationId}/call`, {
+                  offer,
+                  offerTo: peerUsername,
+                }).catch(() => undefined);
+                sentAnswersRef.current.delete(peerUsername);
+              } catch (_e) { /* renegotiation best-effort */ }
+            }
+            setLocalVideoEnabled(true);
+          }
+        } catch (_e) { /* camera re-add best-effort */ }
+      }
+
       return;
     }
 
@@ -3761,13 +4129,22 @@ function TalkInner() {
     },
   });
 
-  // Auto mark-as-read when viewing a conversation and new messages arrive
+  // Mark a conversation as read when you OPEN it, and again when new messages
+  // arrive while you're viewing it. The on-open pass is what clears static
+  // conversations like "Talk updates" (the changelog), which never receive new
+  // messages — without it the unread badge would stick forever.
   useEffect(() => {
     if (!activeConversationId) return;
     const currentCount = messagesList.length;
-    if (currentCount > prevMessageCountRef.current && prevMessageCountRef.current > 0) {
-      // New messages arrived while viewing — mark as read
+    const justOpened = markedReadConversationRef.current !== activeConversationId;
+    const newMessageArrived =
+      currentCount > prevMessageCountRef.current && prevMessageCountRef.current > 0;
+
+    if (justOpened || newMessageArrived) {
+      // Server fetches the latest message id itself, so this is safe even before
+      // messages have finished loading client-side.
       markReadMutation.mutate(activeConversationId);
+      markedReadConversationRef.current = activeConversationId;
     }
     prevMessageCountRef.current = currentCount;
   }, [activeConversationId, messagesList.length]);
@@ -3780,6 +4157,32 @@ function TalkInner() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/conversations"] });
     },
+  });
+
+  // Pin (favorite) a conversation to the top
+  const favoriteMutation = useMutation({
+    mutationFn: async ({ id, favorite }: { id: number; favorite: boolean }) => {
+      await apiRequest("PATCH", `/api/conversations/${id}/favorite`, { favorite });
+    },
+    onMutate: ({ id, favorite }) => {
+      queryClient.setQueryData(["/api/conversations"], (old: { data: Conversation[] } | undefined) =>
+        old ? { data: old.data.map((c) => (c.id === id ? { ...c, isFavorite: favorite } : c)) } : old,
+      );
+    },
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ["/api/conversations"] }),
+  });
+
+  // Mark a conversation read / unread
+  const readStateMutation = useMutation({
+    mutationFn: async ({ id, read }: { id: number; read: boolean }) => {
+      await apiRequest("PATCH", read ? `/api/conversations/${id}/read` : `/api/conversations/${id}/unread`);
+    },
+    onMutate: ({ id, read }) => {
+      queryClient.setQueryData(["/api/conversations"], (old: { data: Conversation[] } | undefined) =>
+        old ? { data: old.data.map((c) => (c.id === id ? { ...c, unreadCount: read ? 0 : Math.max(1, c.unreadCount || 0) } : c)) } : old,
+      );
+    },
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ["/api/conversations"] }),
   });
 
   // Leave group mutation
@@ -3865,7 +4268,7 @@ function TalkInner() {
     if (!content) return;
 
     const optimisticMsg: Message = {
-      id: Date.now(),
+      id: Date.now() + Math.floor(Math.random() * 1000),
       conversationId: activeConversationId,
       senderId: currentUserId,
       senderName: currentUserName,
@@ -3899,10 +4302,11 @@ function TalkInner() {
     const el = e.currentTarget;
     el.style.height = "auto";
     el.style.height = Math.min(el.scrollHeight, 120) + "px";
-    // Send typing signal (debounced by 2s via timeout)
+    if (!typingTimeoutRef.current) {
+      sendTypingSignal();
+    }
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-    sendTypingSignal();
-    typingTimeoutRef.current = setTimeout(() => {/* typing expires on server */}, 3000);
+    typingTimeoutRef.current = setTimeout(() => { typingTimeoutRef.current = null; }, 3000);
   };
 
   const sendTypingSignal = useCallback(() => {
@@ -3911,7 +4315,6 @@ function TalkInner() {
   }, [activeConversationId]);
 
   const handleComposerFocus = () => {
-    sendTypingSignal();
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
   };
 
@@ -3943,8 +4346,15 @@ function TalkInner() {
     setForwardMessage(null);
   }, [forwardMessage, queryClient, showToast]);
 
+  // Remembers which (message, emoji) pairs the current user has reacted with this session,
+  // so clicking the same emoji toggles it off. Counts always come from the server.
+  const myReactionsRef = useRef<Set<string>>(new Set());
   const handleReact = useCallback((msgId: number, emoji: string) => {
-    // Optimistic reaction update
+    if (!activeConversationId) return;
+    const key = `${msgId}:${emoji}`;
+    const isRemoving = myReactionsRef.current.has(key);
+
+    // Optimistic update (reconciled by the next refetch).
     queryClient.setQueryData(
       ["/api/conversations/messages", activeConversationId],
       (old: { data: Message[] } | undefined) => {
@@ -3952,13 +4362,30 @@ function TalkInner() {
         return {
           data: old.data.map((msg) => {
             if (msg.id !== msgId) return msg;
-            const reactions = msg.reactions ? JSON.parse(msg.reactions) as Record<string, number> : {};
-            reactions[emoji] = (reactions[emoji] || 0) + 1;
-            return { ...msg, reactions: JSON.stringify(reactions) };
+            let reactions: Record<string, number> = {};
+            try { if (msg.reactions) reactions = JSON.parse(msg.reactions); } catch { /* keep empty */ }
+            const next = (reactions[emoji] || 0) + (isRemoving ? -1 : 1);
+            if (next > 0) reactions[emoji] = next; else delete reactions[emoji];
+            return { ...msg, reactions: Object.keys(reactions).length ? JSON.stringify(reactions) : null };
           }),
         };
       }
     );
+
+    if (isRemoving) myReactionsRef.current.delete(key);
+    else myReactionsRef.current.add(key);
+
+    // Persist to Nextcloud, then reconcile real counts.
+    const request = isRemoving
+      ? apiRequest("DELETE", `/api/conversations/${activeConversationId}/messages/${msgId}/reactions?reaction=${encodeURIComponent(emoji)}`)
+      : apiRequest("POST", `/api/conversations/${activeConversationId}/messages/${msgId}/reactions`, { reaction: emoji });
+    request
+      .then(() => queryClient.invalidateQueries({ queryKey: ["/api/conversations/messages", activeConversationId] }))
+      .catch(() => {
+        // Roll back the membership flag on failure; the next poll fixes the count.
+        if (isRemoving) myReactionsRef.current.add(key);
+        else myReactionsRef.current.delete(key);
+      });
   }, [activeConversationId, queryClient]);
 
   const handleAddCallParticipant = useCallback(async (username: string) => {
@@ -4047,7 +4474,7 @@ function TalkInner() {
     if (!newGroupName.trim() || newGroupMembers.length === 0) return;
     const groupName = newGroupName.trim();
     createConversationMutation.mutate({
-      name: newGroupName,
+      name: groupName,
       type: "group",
       memberUsernames: newGroupMembers,
     });
@@ -4139,8 +4566,11 @@ function TalkInner() {
     ? allConversations.filter((c) => c.name.toLowerCase().includes(query) || (c.lastMessage || "").toLowerCase().includes(query))
     : allConversations;
 
-  // Sort: unread on top (sorted by recency), then read (sorted by recency)
+  // Sort: pinned first, then unread, then by most recent activity
   const sortedConversations = [...filteredConversations].sort((a, b) => {
+    const aFav = a.isFavorite ? 1 : 0;
+    const bFav = b.isFavorite ? 1 : 0;
+    if (aFav !== bFav) return bFav - aFav;
     const aUnread = (a.unreadCount || 0) > 0 ? 1 : 0;
     const bUnread = (b.unreadCount || 0) > 0 ? 1 : 0;
     // Unread conversations float to the top
@@ -4181,6 +4611,49 @@ function TalkInner() {
             <PhoneOff size={14} className="text-red-400" />
           </button>
         </div>
+      )}
+
+      {/* AI Call Notes — floating control shown during any active call */}
+      {callState?.active && (
+        <div className="fixed top-3 left-1/2 z-[70] flex -translate-x-1/2 items-center gap-2 rounded-full border bg-background/95 px-3 py-1.5 shadow-lg backdrop-blur">
+          {callNotes.supported ? (
+            <>
+              <button
+                onClick={() => setCallNotesEnabled((v) => !v)}
+                title="Let AI take notes of this call and save them to Notes when it ends"
+                className={cn(
+                  "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
+                  callNotesEnabled ? "bg-primary text-primary-foreground" : "bg-muted hover:bg-muted/70",
+                )}
+              >
+                <FileText size={13} />
+                {callNotesEnabled ? "AI notes on" : "Take AI notes"}
+              </button>
+              {callNotesEnabled && (
+                <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
+                  <span className={cn("h-2 w-2 rounded-full", callNotes.isRecording ? "animate-pulse bg-red-500" : "bg-muted-foreground/40")} />
+                  capturing your speech
+                </span>
+              )}
+              {callNotesEnabled && callNotes.liveText && (
+                <span className="max-w-[220px] truncate text-[11px] italic text-muted-foreground">“{callNotes.liveText}”</span>
+              )}
+            </>
+          ) : (
+            <span className="text-[11px] text-muted-foreground">AI notes need Chrome or Edge</span>
+          )}
+        </div>
+      )}
+
+      {/* Post-call action items → Calendar */}
+      {pendingActionItems && (
+        <ActionItemsDialog
+          items={pendingActionItems}
+          boards={deckBoards}
+          onClose={() => setPendingActionItems(null)}
+          onAddToCalendar={addActionItemsToCalendar}
+          onAddToDeck={addActionItemsToDeck}
+        />
       )}
 
       {/* Call overlays — use VideoCallOverlay when ANY video/screen is active (local or remote) */}
@@ -4296,6 +4769,9 @@ function TalkInner() {
                         conversation={c}
                         isActive={c.id === activeConversationId}
                         onClick={() => handleSelectConversation(c.id)}
+                        onTogglePin={() => favoriteMutation.mutate({ id: c.id, favorite: !c.isFavorite })}
+                        onToggleRead={() => readStateMutation.mutate({ id: c.id, read: (c.unreadCount || 0) > 0 })}
+                        onToggleMute={() => muteMutation.mutate({ id: c.id, muted: !c.isMuted })}
                       />
                     ))}
                   </div>
@@ -4385,8 +4861,8 @@ function TalkInner() {
                   <span className="text-xs text-red-500/80 bg-red-50 dark:bg-red-900/20 px-2 py-1 rounded font-medium">Read only</span>
                 ) : (
                 <>
-                {callSignal?.active && !callState?.active && callSignal.participants?.some((p) => p.status === "joined") ? (
-                  /* Active group call with participants — show Join button */
+                {callSignal?.active && !callState?.active && activeConversation?.type === "group" && callSignal.participants?.some((p) => p.status === "joined") ? (
+                  /* Active group call with participants — show Join button (DMs never show Join) */
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <button
@@ -4652,7 +5128,7 @@ function TalkInner() {
                     const isConsecutive = prevMsg
                       && prevMsg.senderId === msg.senderId
                       && !prevMsg.systemMessage
-                      && (new Date(msg.sentAt).getTime() - new Date(prevMsg.sentAt).getTime()) < 120000;
+                      && (new Date(msg.sentAt).getTime() - new Date(prevMsg.sentAt).getTime()) < CONSECUTIVE_MSG_THRESHOLD_MS;
 
                     return (
                       <div key={msg.id} id={`msg-${msg.id}`}>

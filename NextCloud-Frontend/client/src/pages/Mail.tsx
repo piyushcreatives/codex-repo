@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { format, parseISO } from "date-fns";
 import {
@@ -41,11 +41,15 @@ function ComposeDialog({
   onOpenChange,
   currentUserName,
   currentUserEmail,
+  initialSubject = "",
+  initialBody = "",
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
   currentUserName: string;
   currentUserEmail: string;
+  initialSubject?: string;
+  initialBody?: string;
 }) {
   const queryClient = useQueryClient();
   const [to, setTo] = useState<string[]>([]);
@@ -53,8 +57,8 @@ function ComposeDialog({
   const [showCcBcc, setShowCcBcc] = useState(false);
   const [cc, setCc] = useState("");
   const [bcc, setBcc] = useState("");
-  const [subject, setSubject] = useState("");
-  const [body, setBody] = useState("");
+  const [subject, setSubject] = useState(initialSubject);
+  const [body, setBody] = useState(initialBody);
   const [showSuggestions, setShowSuggestions] = useState(false);
 
   const { data: contactsData } = useQuery<{ data: Contact[] }>({
@@ -79,6 +83,8 @@ function ComposeDialog({
         from: currentUserName,
         fromEmail: currentUserEmail,
         to: to.join(", "),
+        cc,
+        bcc,
         subject: subject || "(no subject)",
         preview: body.substring(0, 100),
         body,
@@ -224,8 +230,15 @@ export default function Mail() {
   const [showSearch, setShowSearch] = useState(false);
   const [sortBy, setSortBy] = useState<"newest" | "oldest" | "sender" | "unread">("newest");
   const [composeOpen, setComposeOpen] = useState(false);
+  const [composePrefill, setComposePrefill] = useState<{ subject?: string; body?: string }>({});
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [replyText, setReplyText] = useState("");
+  const replyRef = useRef<HTMLTextAreaElement>(null);
+
+  const focusReply = () => {
+    replyRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    replyRef.current?.focus();
+  };
   const [labelFilter, setLabelFilter] = useState<string | null>(null);
   const { data: currentUserData } = useQuery<{ data: { name?: string; email?: string } }>({
     queryKey: ["/api/user"],
@@ -403,15 +416,6 @@ export default function Mail() {
             </button>
           ))}
         </div>
-
-        {/* Storage indicator */}
-        <div className="mt-auto p-3 border-t">
-          <p className="text-[11px] text-muted-foreground mb-1">Mail storage</p>
-          <div className="w-full h-1.5 bg-muted rounded-full overflow-hidden">
-            <div className="h-full bg-primary rounded-full" style={{ width: "34%" }} />
-          </div>
-          <p className="text-[11px] text-muted-foreground mt-1">1.7 GB of 5 GB used</p>
-        </div>
       </div>
 
       {/* ─── Center Panel: Message List ──────────── */}
@@ -549,8 +553,8 @@ export default function Mail() {
 
             {activeEmail.hasAttachment && (
               <div className="flex gap-2 mt-3">
-                <div className="flex items-center gap-1.5 text-xs bg-muted px-3 py-1.5 rounded-lg cursor-pointer hover:bg-accent">
-                  <Paperclip size={12} /> attachment.pdf · 240 KB
+                <div className="flex items-center gap-1.5 text-xs bg-muted px-3 py-1.5 rounded-lg text-muted-foreground">
+                  <Paperclip size={12} /> This message has an attachment
                 </div>
               </div>
             )}
@@ -558,13 +562,19 @@ export default function Mail() {
 
           {/* Action toolbar */}
           <div className="flex gap-2 px-6 py-3 border-b bg-muted/20 flex-shrink-0">
-            <Button variant="outline" size="sm" className="gap-1" onClick={() => showToast("Reply clicked")}>
+            <Button variant="outline" size="sm" className="gap-1" onClick={focusReply}>
               <Reply size={14} /> Reply
             </Button>
-            <Button variant="outline" size="sm" className="gap-1" onClick={() => showToast("Reply All clicked")}>
+            <Button variant="outline" size="sm" className="gap-1" onClick={focusReply}>
               <ReplyAll size={14} /> Reply All
             </Button>
-            <Button variant="outline" size="sm" className="gap-1" onClick={() => showToast("Forward clicked")}>
+            <Button variant="outline" size="sm" className="gap-1" onClick={() => {
+              setComposePrefill({
+                subject: `Fwd: ${activeEmail.subject}`,
+                body: `\n\n---------- Forwarded message ----------\nFrom: ${activeEmail.from} <${activeEmail.fromEmail}>\nSubject: ${activeEmail.subject}\n\n${activeEmail.body}`,
+              });
+              setComposeOpen(true);
+            }}>
               <Forward size={14} /> Forward
             </Button>
             <div className="flex-1" />
@@ -609,6 +619,7 @@ export default function Mail() {
               <p className="text-xs text-muted-foreground mb-2">Reply to {activeEmail.from}</p>
               <div className="border rounded-lg overflow-hidden">
                 <textarea
+                  ref={replyRef}
                   className="w-full p-3 text-sm resize-none bg-background outline-none min-h-[100px]"
                   placeholder="Write a reply…"
                   value={replyText}
@@ -633,9 +644,11 @@ export default function Mail() {
       {composeOpen && (
         <ComposeDialog
           open={composeOpen}
-          onOpenChange={setComposeOpen}
+          onOpenChange={(v) => { setComposeOpen(v); if (!v) setComposePrefill({}); }}
           currentUserName={currentUserName}
           currentUserEmail={currentUserEmail}
+          initialSubject={composePrefill.subject ?? ""}
+          initialBody={composePrefill.body ?? ""}
         />
       )}
     </div>

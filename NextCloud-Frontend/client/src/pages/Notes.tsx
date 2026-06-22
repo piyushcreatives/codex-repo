@@ -17,11 +17,30 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { EmptyState } from "@/components/ui/empty-state";
+import { LoadingList } from "@/components/ui/loading-list";
+import { ErrorState, getQueryErrorMessage } from "@/components/ui/query-state";
 import type { Note } from "@shared/schema";
 
+/** Safely parse a note's JSON tags column; never throws on malformed data. */
+function parseTags(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((t): t is string => typeof t === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
 // ─── Markdown Renderer ──────────────────────────────────────
+function escapeHtml(str: string): string {
+  return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
 function renderMarkdown(text: string): string {
-  return text
+  const safe = escapeHtml(text);
+  return safe
     .replace(/^### (.+)$/gm, '<h3 class="text-base font-semibold mt-4 mb-1">$1</h3>')
     .replace(/^## (.+)$/gm, '<h2 class="text-lg font-semibold mt-5 mb-2">$1</h2>')
     .replace(/^# (.+)$/gm, '<h1 class="text-xl font-bold mt-6 mb-2">$1</h1>')
@@ -29,7 +48,7 @@ function renderMarkdown(text: string): string {
     .replace(/\*(.+?)\*/g, "<em>$1</em>")
     .replace(/~~(.+?)~~/g, "<del>$1</del>")
     .replace(/`(.+?)`/g, '<code class="bg-muted px-1 py-0.5 rounded text-xs font-mono">$1</code>')
-    .replace(/^> (.+)$/gm, '<blockquote class="border-l-4 border-primary/40 pl-3 text-muted-foreground italic my-2">$1</blockquote>')
+    .replace(/^&gt; (.+)$/gm, '<blockquote class="border-l-4 border-primary/40 pl-3 text-muted-foreground italic my-2">$1</blockquote>')
     .replace(/^- \[ \] (.+)$/gm, '<div class="flex items-center gap-2 my-1"><input type="checkbox" disabled /><span>$1</span></div>')
     .replace(/^- \[x\] (.+)$/gm, '<div class="flex items-center gap-2 my-1"><input type="checkbox" checked disabled /><span class="line-through text-muted-foreground">$1</span></div>')
     .replace(/^- (.+)$/gm, '<li class="ml-4 list-disc">$1</li>')
@@ -222,13 +241,29 @@ export default function Notes() {
   const saveTimerRef = useRef<ReturnType<typeof setTimeout>>();
 
   // Queries
-  const { data: notesData } = useQuery({
+  const { data: notesData, isLoading: notesLoading, error: notesError } = useQuery({
     queryKey: ["/api/notes"],
     queryFn: () => fetchJson<{ data: Note[] }>("/api/notes"),
   });
 
   const notes = notesData?.data || [];
   const activeNote = notes.find((n) => n.id === activeNoteId);
+
+  // Declared before the effects below that reference it (otherwise the dependency array
+  // reads `saveMutation` before its const is initialized → TDZ crash on mount).
+  const saveMutation = useMutation({
+    mutationFn: async ({ id, title: t, content: c }: { id: number; title: string; content: string }) => {
+      const response = await apiRequest("PATCH", `/api/notes/${id}`, { title: t, content: c });
+      return response.json() as Promise<{ data: Note }>;
+    },
+    onSuccess: async (result) => {
+      setActiveNoteId(result.data.id);
+      setTitle(result.data.title);
+      setContent(result.data.content);
+      await queryClient.invalidateQueries({ queryKey: ["/api/notes"] });
+      setLastSaved("just now");
+    },
+  });
 
   // Set first note as active on load
   useEffect(() => {
@@ -252,34 +287,26 @@ export default function Notes() {
   }, [notes, activeNoteId]);
 
   // Auto-save
+  const activeNoteIdRef = useRef(activeNoteId);
+  activeNoteIdRef.current = activeNoteId;
+  const activeNoteRef = useRef(activeNote);
+  activeNoteRef.current = activeNote;
+
   useEffect(() => {
-    if (!activeNoteId || !activeNote) return;
-    // Don't save if nothing changed
-    if (title === activeNote.title && content === activeNote.content) return;
+    const noteId = activeNoteIdRef.current;
+    const note = activeNoteRef.current;
+    if (!noteId || !note) return;
+    if (title === note.title && content === note.content) return;
 
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(() => {
-      saveMutation.mutate({ id: activeNoteId, title, content });
+      saveMutation.mutate({ id: noteId, title, content });
     }, 1500);
 
     return () => {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     };
-  }, [title, content]);
-
-  const saveMutation = useMutation({
-    mutationFn: async ({ id, title: t, content: c }: { id: number; title: string; content: string }) => {
-      const response = await apiRequest("PATCH", `/api/notes/${id}`, { title: t, content: c });
-      return response.json() as Promise<{ data: Note }>;
-    },
-    onSuccess: async (result) => {
-      setActiveNoteId(result.data.id);
-      setTitle(result.data.title);
-      setContent(result.data.content);
-      await queryClient.invalidateQueries({ queryKey: ["/api/notes"] });
-      setLastSaved("just now");
-    },
-  });
+  }, [title, content, saveMutation]);
 
   const createMutation = useMutation({
     mutationFn: async () => {
@@ -344,7 +371,7 @@ export default function Notes() {
 
   const handleAddTag = useCallback(() => {
     if (!tagInput.trim() || !activeNoteId) return;
-    const currentTags: string[] = activeNote?.tags ? JSON.parse(activeNote.tags) : [];
+    const currentTags = parseTags(activeNote?.tags);
     if (!currentTags.includes(tagInput.trim())) {
       const newTags = [...currentTags, tagInput.trim()];
       apiRequest("PATCH", `/api/notes/${activeNoteId}`, { tags: JSON.stringify(newTags) }).then(() => {
@@ -356,7 +383,7 @@ export default function Notes() {
 
   const handleRemoveTag = useCallback((tag: string) => {
     if (!activeNoteId || !activeNote) return;
-    const currentTags: string[] = activeNote.tags ? JSON.parse(activeNote.tags) : [];
+    const currentTags = parseTags(activeNote.tags);
     const newTags = currentTags.filter((t) => t !== tag);
     apiRequest("PATCH", `/api/notes/${activeNoteId}`, { tags: JSON.stringify(newTags) }).then(() => {
       queryClient.invalidateQueries({ queryKey: ["/api/notes"] });
@@ -372,7 +399,7 @@ export default function Notes() {
 
   const pinnedNotes = filteredNotes.filter((n) => n.isPinned);
   const unpinnedNotes = filteredNotes.filter((n) => !n.isPinned);
-  const tags: string[] = activeNote?.tags ? JSON.parse(activeNote.tags) : [];
+  const tags = parseTags(activeNote?.tags);
 
   return (
     <>
@@ -392,17 +419,25 @@ export default function Notes() {
               onChange={(e) => setSearchQuery(e.target.value)}
               className="flex-1 h-9 rounded-lg bg-muted border-0"
             />
-            <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" onClick={() => createMutation.mutate()}>
+            <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" aria-label="New note" onClick={() => createMutation.mutate()}>
               <Plus size={16} />
             </Button>
           </div>
 
           <div className="flex-1 overflow-y-auto">
-            {filteredNotes.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-12 text-center px-4">
-                <Search size={32} className="text-muted-foreground/30 mb-2" />
-                <p className="text-sm text-muted-foreground">No notes match your search</p>
+            {notesLoading ? (
+              <div className="p-3">
+                <LoadingList count={6} rowClassName="h-12 w-full" />
               </div>
+            ) : notesError ? (
+              <ErrorState message={getQueryErrorMessage(notesError) ?? "Unable to load notes."} className="py-12" />
+            ) : filteredNotes.length === 0 ? (
+              <EmptyState
+                icon={searchQuery ? Search : StickyNote}
+                title={searchQuery ? "No notes match your search" : "No notes yet"}
+                description={searchQuery ? undefined : "Create your first note to get started."}
+                className="py-12"
+              />
             ) : (
               <>
                 {pinnedNotes.length > 0 && (

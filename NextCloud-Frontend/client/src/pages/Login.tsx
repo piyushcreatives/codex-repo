@@ -47,6 +47,7 @@ export default function Login() {
         const capabilities = (await capabilitiesResponse.json()) as AppCapabilities;
         queryClient.setQueryData(["/api/capabilities"], capabilities);
       }
+      setLoading(false);
       setLocation("/");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to sign in.");

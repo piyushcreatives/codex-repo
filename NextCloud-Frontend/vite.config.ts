@@ -34,6 +34,12 @@ export default defineConfig(({ mode }) => {
           target: apiProxyTarget,
           secure: false,  // accept self-signed certs
         },
+        "/ws": {
+          target: apiProxyTarget,
+          ws: true,        // proxy the WebSocket upgrade
+          secure: false,
+          changeOrigin: true,
+        },
         "/remote.php": {
           target: nextcloudProxyTarget,
           changeOrigin: true,

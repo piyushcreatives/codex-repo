@@ -6,7 +6,24 @@ import type { NextcloudSession } from "./credential-provider";
 const SESSION_COOKIE = process.env.SESSION_COOKIE_NAME || "cloudspace_session";
 const SESSION_TTL_SECONDS = Number(process.env.SESSION_TTL_SECONDS || 60 * 60 * 12);
 const SESSION_DB_PATH = process.env.SESSION_DB_PATH || "sessions.db";
-const SESSION_SECRET = process.env.SESSION_SECRET || "cloudspace-dev-session-secret";
+const SESSION_SECRET = (() => {
+  const fromEnv = process.env.SESSION_SECRET;
+  const isProd = process.env.NODE_ENV === "production";
+  if (fromEnv && fromEnv.length >= 32) return fromEnv;
+  if (isProd) {
+    // Fail closed: never boot production with a weak/absent session key.
+    // The session payload holds the Nextcloud app-password — a guessable key means anyone can decrypt it.
+    throw new Error(
+      "[security] SESSION_SECRET must be set to at least 32 characters in production. Refusing to start.",
+    );
+  }
+  if (fromEnv) {
+    console.warn("[security] SESSION_SECRET is shorter than 32 chars — acceptable for local dev only.");
+    return fromEnv;
+  }
+  console.warn("[security] SESSION_SECRET not set — using insecure dev default. Set SESSION_SECRET for any shared/production deploy.");
+  return "cloudspace-dev-session-secret";
+})();
 const SESSION_COOKIE_SECURE =
   process.env.SESSION_COOKIE_SECURE === "true" || process.env.NODE_ENV === "production";
 
@@ -153,6 +170,12 @@ export function createNextcloudSession(res: Response, session: NextcloudSession)
 
 export function getNextcloudSession(req: Request) {
   const token = parseCookies(req.headers.cookie)[SESSION_COOKIE];
+  return loadStoredSession(token);
+}
+
+// For WebSocket upgrades, where we only have the raw cookie header.
+export function getSessionFromCookieHeader(cookieHeader?: string) {
+  const token = parseCookies(cookieHeader)[SESSION_COOKIE];
   return loadStoredSession(token);
 }
 

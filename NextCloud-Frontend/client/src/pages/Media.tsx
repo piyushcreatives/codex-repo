@@ -19,7 +19,7 @@ import {
   Video,
   X,
 } from "lucide-react";
-import { fetchJson } from "@/lib/api";
+import { apiRequest, fetchJson } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -34,6 +34,7 @@ type MediaItem = {
   size: number;
   modifiedAt: string;
   mediaKind: "image" | "video";
+  isFavourite: boolean;
 };
 
 type ViewMode = "large" | "small" | "list";
@@ -60,6 +61,11 @@ function formatBytes(bytes: number) {
 
 function mediaUrl(item: MediaItem) {
   return `/api/files/${item.id}?path=${encodeURIComponent(item.path)}&download=1`;
+}
+
+// Small server-generated thumbnail for grid/list (avoids downloading originals).
+function thumbUrl(item: MediaItem, size = 256) {
+  return `/api/media/thumbnail?path=${encodeURIComponent(item.path)}&size=${size}`;
 }
 
 async function uploadViaAdapter(file: File, parentPath: string, onProgress: (value: number) => void) {
@@ -108,7 +114,6 @@ export default function Media() {
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<Record<string, number>>({});
-  const [favourites, setFavourites] = useState<Set<number>>(new Set());
 
   const mediaQuery = useQuery({
     queryKey: ["/api/media"],
@@ -133,7 +138,7 @@ export default function Media() {
     }
 
     if (activeFilter === "Favourites") {
-      next = next.filter((item) => favourites.has(item.id));
+      next = next.filter((item) => item.isFavourite);
     } else if (activeFilter === "Videos") {
       next = next.filter((item) => item.mediaKind === "video");
     } else if (activeFilter === "Images") {
@@ -158,7 +163,7 @@ export default function Media() {
     }
 
     return next;
-  }, [activeFilter, favourites, mediaFiles, selectedAlbum, sortMode]);
+  }, [activeFilter, mediaFiles, selectedAlbum, sortMode]);
 
   const grouped = useMemo(() => {
     const map = new Map<string, MediaItem[]>();
@@ -185,13 +190,15 @@ export default function Media() {
     onError: (error) => showToast(error instanceof Error ? error.message : "Unable to delete media."),
   });
 
-  const toggleFavourite = (id: number) => {
-    setFavourites((current) => {
-      const next = new Set(current);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
+  const favoriteMutation = useMutation({
+    mutationFn: ({ path, favorite }: { path: string; favorite: boolean }) =>
+      apiRequest("PATCH", "/api/media/favorite", { path, favorite }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/media"] }),
+    onError: () => showToast("Unable to update favourite"),
+  });
+
+  const toggleFavourite = (item: MediaItem) => {
+    favoriteMutation.mutate({ path: item.path, favorite: !item.isFavourite });
   };
 
   const handleDownload = async (item: MediaItem) => {
@@ -361,7 +368,11 @@ export default function Media() {
               Select all
             </Button>
             <div className="flex-1" />
-            <Button variant="ghost" size="sm" className="gap-1" onClick={() => selected.forEach((id) => toggleFavourite(id))}>
+            <Button variant="ghost" size="sm" className="gap-1" onClick={() => {
+              filteredMedia.filter((item) => selected.has(item.id) && !item.isFavourite)
+                .forEach((item) => favoriteMutation.mutate({ path: item.path, favorite: true }));
+              setSelected(new Set());
+            }}>
               <Heart size={14} /> Favourite
             </Button>
             <Button
@@ -405,7 +416,7 @@ export default function Media() {
                   <tr key={item.id} className="border-b hover:bg-muted/40 cursor-pointer" onClick={() => !selectMode && setLightboxIndex(index)}>
                     <td className="py-2">
                       {item.mediaKind === "image" ? (
-                        <img src={mediaUrl(item)} alt={item.name} className="w-12 h-12 object-cover rounded" loading="lazy" />
+                        <img src={thumbUrl(item, 96)} alt={item.name} className="w-12 h-12 object-cover rounded" loading="lazy" />
                       ) : (
                         <div className="w-12 h-12 rounded bg-muted flex items-center justify-center"><Video size={18} /></div>
                       )}
@@ -419,8 +430,8 @@ export default function Media() {
                         <Button variant="ghost" size="icon" className="h-7 w-7" onClick={(event) => { event.stopPropagation(); void handleDownload(item); }}>
                           <Download size={14} />
                         </Button>
-                        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={(event) => { event.stopPropagation(); toggleFavourite(item.id); }}>
-                          <Heart size={14} className={favourites.has(item.id) ? "fill-current text-rose-500" : ""} />
+                        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={(event) => { event.stopPropagation(); toggleFavourite(item); }}>
+                          <Heart size={14} className={item.isFavourite ? "fill-current text-rose-500" : ""} />
                         </Button>
                         <Button variant="ghost" size="icon" className="h-7 w-7" onClick={(event) => { event.stopPropagation(); deleteMutation.mutate(item); }}>
                           <Trash2 size={14} />
@@ -454,7 +465,7 @@ export default function Media() {
                         }) : setLightboxIndex(itemIndex)}
                       >
                         {item.mediaKind === "image" ? (
-                          <img src={mediaUrl(item)} alt={item.name} className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105" loading="lazy" />
+                          <img src={thumbUrl(item, 256)} alt={item.name} className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105" loading="lazy" />
                         ) : (
                           <div className="w-full h-full flex items-center justify-center bg-slate-900 text-white">
                             <Video size={32} />
@@ -463,7 +474,7 @@ export default function Media() {
                         <div className="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 transition-opacity flex items-end p-2">
                           <p className="text-white text-xs truncate">{item.name}</p>
                         </div>
-                        {favourites.has(item.id) && <Heart size={14} className="absolute top-2 right-2 fill-white text-white drop-shadow" />}
+                        {item.isFavourite && <Heart size={14} className="absolute top-2 right-2 fill-white text-white drop-shadow" />}
                         {selectMode && (
                           <div className={cn("absolute top-2 left-2 w-5 h-5 rounded border-2 flex items-center justify-center", isSelected ? "bg-primary border-primary" : "border-white bg-black/20")}>
                             {isSelected && <Check size={12} className="text-white" />}
@@ -489,8 +500,8 @@ export default function Media() {
               </p>
             </div>
             <div className="flex items-center gap-2">
-              <button className="text-white/70 hover:text-white p-2" onClick={() => toggleFavourite(activeMedia.id)}>
-                <Heart size={18} className={favourites.has(activeMedia.id) ? "fill-white" : ""} />
+              <button className="text-white/70 hover:text-white p-2" onClick={() => toggleFavourite(activeMedia)}>
+                <Heart size={18} className={activeMedia.isFavourite ? "fill-white" : ""} />
               </button>
               <button className="text-white/70 hover:text-white p-2" onClick={() => void handleDownload(activeMedia)}>
                 <Download size={18} />

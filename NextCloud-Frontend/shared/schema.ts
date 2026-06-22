@@ -47,6 +47,7 @@ export const conversations = sqliteTable("conversations", {
   unreadCount: integer("unread_count").default(0),
   members: text("members"), // JSON array
   isMuted: integer("is_muted", { mode: "boolean" }).default(false),
+  isFavorite: integer("is_favorite", { mode: "boolean" }).default(false),
   adminId: integer("admin_id"),
   createdBy: integer("created_by"),
 });

@@ -1,4 +1,5 @@
-import { useState, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
+import { useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Users, Search, LayoutGrid, List, Upload, Download, UserPlus,
@@ -15,6 +16,9 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { EmptyState } from "@/components/ui/empty-state";
+import { LoadingList } from "@/components/ui/loading-list";
+import { ErrorState, getQueryErrorMessage } from "@/components/ui/query-state";
 import type { Contact } from "@shared/schema";
 
 // ─── Toast helper ──────────────────────────────────────────
@@ -53,6 +57,20 @@ function ContactDialog({
     }
     return [];
   });
+
+  useEffect(() => {
+    setName(contact?.name ?? "");
+    setEmail(contact?.email ?? "");
+    setPhone(contact?.phone ?? "");
+    setCompany(contact?.company ?? "");
+    setGroup(contact?.group ?? "All");
+    setTagInput("");
+    if (contact?.tags) {
+      try { setTags(JSON.parse(contact.tags)); } catch { setTags([]); }
+    } else {
+      setTags([]);
+    }
+  }, [contact]);
 
   const save = useMutation({
     mutationFn: async () => {
@@ -159,7 +177,7 @@ function ContactDialog({
 // ─── Main Contacts Page ────────────────────────────────────
 export default function Contacts() {
   const queryClient = useQueryClient();
-  const { data: contactsData } = useQuery<{ data: Contact[] }>({
+  const { data: contactsData, isLoading: contactsLoading, error: contactsError } = useQuery<{ data: Contact[] }>({
     queryKey: ["/api/contacts"],
     queryFn: () => fetchJson<{ data: Contact[] }>("/api/contacts"),
   });
@@ -174,14 +192,63 @@ export default function Contacts() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editContact, setEditContact] = useState<Contact | null>(null);
 
+  const [, setLocation] = useLocation();
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [confirmDelete, setConfirmDelete] = useState<Contact | null>(null);
+
   const deleteMutation = useMutation({
     mutationFn: (id: number) => apiRequest("DELETE", `/api/contacts/${id}`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/contacts"] });
       setActiveContact(null);
+      setConfirmDelete(null);
       showToast("Contact deleted");
     },
+    onError: () => showToast("Unable to delete contact"),
   });
+
+  const importMutation = useMutation({
+    mutationFn: (vcard: string) =>
+      fetchJson<{ data: { imported: number; failed: number } }>("/api/contacts/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ vcard }),
+      }),
+    onSuccess: (res) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/contacts"] });
+      const { imported, failed } = res.data;
+      showToast(`Imported ${imported} contact${imported === 1 ? "" : "s"}${failed ? `, ${failed} failed` : ""}`);
+    },
+    onError: () => showToast("Import failed"),
+  });
+
+  const handleImportFile = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const text = typeof reader.result === "string" ? reader.result : "";
+      if (!/BEGIN:VCARD/i.test(text)) { showToast("That doesn't look like a .vcf file"); return; }
+      importMutation.mutate(text);
+    };
+    reader.readAsText(file);
+  };
+
+  const handleExport = async () => {
+    try {
+      const res = await fetch("/api/contacts/export", { credentials: "include" });
+      if (!res.ok) throw new Error();
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "cloudspace-contacts.vcf";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch {
+      showToast("Export failed");
+    }
+  };
 
   // Derived data
   const groups = useMemo(() => {
@@ -294,10 +361,21 @@ export default function Contacts() {
         <Separator className="my-2 mx-2" />
 
         <div className="px-1 space-y-1 pb-4">
-          <Button variant="ghost" size="sm" className="w-full justify-start gap-2" onClick={() => showToast("Import vCard coming soon")}>
-            <Upload size={14} /> Import
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".vcf,text/vcard"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) handleImportFile(file);
+              e.target.value = ""; // allow re-importing the same file
+            }}
+          />
+          <Button variant="ghost" size="sm" className="w-full justify-start gap-2" disabled={importMutation.isPending} onClick={() => fileInputRef.current?.click()}>
+            <Upload size={14} /> {importMutation.isPending ? "Importing…" : "Import"}
           </Button>
-          <Button variant="ghost" size="sm" className="w-full justify-start gap-2" onClick={() => showToast("Export contacts coming soon")}>
+          <Button variant="ghost" size="sm" className="w-full justify-start gap-2" disabled={contacts.length === 0} onClick={handleExport}>
             <Download size={14} /> Export
           </Button>
           <Button size="sm" className="w-full justify-start gap-2" onClick={openNewDialog}>
@@ -332,21 +410,29 @@ export default function Contacts() {
               <DropdownMenuItem onClick={() => setSortBy("recent")}>Recently added</DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
-          <Button variant={viewMode === "grid" ? "secondary" : "ghost"} size="icon" className="h-9 w-9" onClick={() => setViewMode("grid")}>
+          <Button variant={viewMode === "grid" ? "secondary" : "ghost"} size="icon" className="h-9 w-9" aria-label="Grid view" aria-pressed={viewMode === "grid"} onClick={() => setViewMode("grid")}>
             <LayoutGrid size={16} />
           </Button>
-          <Button variant={viewMode === "list" ? "secondary" : "ghost"} size="icon" className="h-9 w-9" onClick={() => setViewMode("list")}>
+          <Button variant={viewMode === "list" ? "secondary" : "ghost"} size="icon" className="h-9 w-9" aria-label="List view" aria-pressed={viewMode === "list"} onClick={() => setViewMode("list")}>
             <List size={16} />
           </Button>
         </div>
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto">
-          {filtered.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-full">
-              <UserX size={40} className="text-muted-foreground/30 mx-auto mb-3" />
-              <p className="text-sm text-muted-foreground">No contacts found</p>
+          {contactsLoading ? (
+            <div className="p-4">
+              <LoadingList count={8} rowClassName="h-16 w-full" />
             </div>
+          ) : contactsError ? (
+            <ErrorState message={getQueryErrorMessage(contactsError) ?? "Unable to load contacts."} className="py-16" />
+          ) : filtered.length === 0 ? (
+            <EmptyState
+              icon={UserX}
+              title={search || selectedGroup !== "all" ? "No contacts found" : "No contacts yet"}
+              description={search || selectedGroup !== "all" ? undefined : "Add a contact to get started."}
+              className="h-full"
+            />
           ) : viewMode === "grid" ? (
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4 p-4">
               {filtered.map(c => {
@@ -416,13 +502,15 @@ export default function Contacts() {
                           <DropdownMenuItem onClick={e => { e.stopPropagation(); openEditDialog(c); }}>
                             <Pencil size={14} className="mr-2" /> Edit
                           </DropdownMenuItem>
-                          <DropdownMenuItem onClick={e => { e.stopPropagation(); showToast("Opening Talk…"); }}>
+                          <DropdownMenuItem onClick={e => { e.stopPropagation(); setLocation("/talk"); }}>
                             <MessageSquare size={14} className="mr-2" /> Send message
                           </DropdownMenuItem>
-                          <DropdownMenuItem onClick={e => { e.stopPropagation(); showToast("Starting call…"); }}>
-                            <Phone size={14} className="mr-2" /> Start call
-                          </DropdownMenuItem>
-                          <DropdownMenuItem className="text-destructive" onClick={e => { e.stopPropagation(); deleteMutation.mutate(c.id); }}>
+                          {c.email && (
+                            <DropdownMenuItem onClick={e => { e.stopPropagation(); window.location.href = `mailto:${c.email}`; }}>
+                              <Mail size={14} className="mr-2" /> Email
+                            </DropdownMenuItem>
+                          )}
+                          <DropdownMenuItem className="text-destructive" onClick={e => { e.stopPropagation(); setConfirmDelete(c); }}>
                             <Trash2 size={14} className="mr-2" /> Delete
                           </DropdownMenuItem>
                         </DropdownMenuContent>
@@ -451,13 +539,17 @@ export default function Contacts() {
             {activeContact.company && <p className="text-sm text-muted-foreground">{activeContact.company}</p>}
 
             <div className="flex gap-6 mt-4">
-              <button className="flex flex-col items-center gap-1 text-xs text-muted-foreground hover:text-foreground" onClick={() => showToast("Opening Talk…")}>
+              <button className="flex flex-col items-center gap-1 text-xs text-muted-foreground hover:text-foreground" onClick={() => setLocation("/talk")}>
                 <MessageSquare size={18} /> Message
               </button>
-              <button className="flex flex-col items-center gap-1 text-xs text-muted-foreground hover:text-foreground" onClick={() => showToast("Starting call…")}>
+              <button className="flex flex-col items-center gap-1 text-xs text-muted-foreground hover:text-foreground" onClick={() => setLocation("/talk")}>
                 <Phone size={18} /> Call
               </button>
-              <button className="flex flex-col items-center gap-1 text-xs text-muted-foreground hover:text-foreground" onClick={() => showToast("Opening Mail…")}>
+              <button
+                className="flex flex-col items-center gap-1 text-xs text-muted-foreground hover:text-foreground disabled:opacity-40"
+                disabled={!activeContact.email}
+                onClick={() => { if (activeContact.email) window.location.href = `mailto:${activeContact.email}`; }}
+              >
                 <Mail size={18} /> Email
               </button>
             </div>
@@ -512,24 +604,6 @@ export default function Contacts() {
             })()}
           </div>
 
-          {/* Recent interactions */}
-          <div className="border-t px-6 py-4">
-            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">Recent</p>
-            <div className="space-y-3">
-              <div className="flex items-start gap-3">
-                <MessageSquare size={16} className="text-primary mt-0.5" />
-                <div><p className="text-xs">Sent a message</p><p className="text-xs text-muted-foreground">2 hours ago</p></div>
-              </div>
-              <div className="flex items-start gap-3">
-                <Upload size={16} className="text-green-500 mt-0.5" />
-                <div><p className="text-xs">Shared a file</p><p className="text-xs text-muted-foreground">Yesterday</p></div>
-              </div>
-              <div className="flex items-start gap-3">
-                <Phone size={16} className="text-orange-500 mt-0.5" />
-                <div><p className="text-xs">Video call</p><p className="text-xs text-muted-foreground">Apr 5</p></div>
-              </div>
-            </div>
-          </div>
         </div>
       )}
 
@@ -542,6 +616,28 @@ export default function Contacts() {
           onSaved={() => setEditContact(null)}
         />
       )}
+
+      {/* Delete confirmation */}
+      <Dialog open={!!confirmDelete} onOpenChange={(v) => { if (!v) setConfirmDelete(null); }}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Delete contact?</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground pt-1">
+            This permanently removes <span className="font-medium text-foreground">{confirmDelete?.name}</span> from your Nextcloud address book. This can't be undone.
+          </p>
+          <div className="flex justify-end gap-2 pt-4">
+            <Button variant="outline" onClick={() => setConfirmDelete(null)}>Cancel</Button>
+            <Button
+              variant="destructive"
+              disabled={deleteMutation.isPending}
+              onClick={() => { if (confirmDelete) deleteMutation.mutate(confirmDelete.id); }}
+            >
+              {deleteMutation.isPending ? "Deleting…" : "Delete"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

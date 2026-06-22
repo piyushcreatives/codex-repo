@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { format, parseISO, isToday, isYesterday, differenceInDays } from "date-fns";
 import {
@@ -7,10 +7,13 @@ import {
   Search,
 } from "lucide-react";
 import { cn, getAvatarColor, getInitials } from "@/lib/utils";
-import { apiRequest } from "@/lib/api";
+import { apiRequest, fetchJson } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { EmptyState } from "@/components/ui/empty-state";
+import { LoadingList } from "@/components/ui/loading-list";
+import { ErrorState, getQueryErrorMessage } from "@/components/ui/query-state";
 import type { Activity as ActivityType } from "@shared/schema";
 
 // ─── Toast ─────────────────────────────────────────────────
@@ -60,9 +63,9 @@ export default function Activity() {
   const [activeFilter, setActiveFilter] = useState("all");
   const [search, setSearch] = useState("");
 
-  const { data: activityData } = useQuery<{ data: ActivityType[] }>({
+  const { data: activityData, isLoading, error } = useQuery<{ data: ActivityType[] }>({
     queryKey: ["/api/activity", activeFilter],
-    queryFn: () => fetch(`/api/activity?limit=50&type=${activeFilter}`).then(r => r.json()),
+    queryFn: () => fetchJson<{ data: ActivityType[] }>(`/api/activity?limit=50&type=${activeFilter}`),
   });
   const activities = activityData?.data ?? [];
 
@@ -72,19 +75,32 @@ export default function Activity() {
   });
 
   const markAllReadMutation = useMutation({
-    mutationFn: () => apiRequest("POST", "/api/activity/read-all"),
-    onSuccess: () => {
+    mutationFn: (_opts?: { silent?: boolean }) => apiRequest("POST", "/api/activity/read-all"),
+    onSuccess: (_data, opts) => {
       queryClient.invalidateQueries({ queryKey: ["/api/activity"] });
-      showToast("All marked as read");
+      if (!opts?.silent) showToast("All marked as read");
     },
   });
 
   // Compute stats from full (unfiltered) data
   const { data: allData } = useQuery<{ data: ActivityType[] }>({
     queryKey: ["/api/activity", "all"],
-    queryFn: () => fetch("/api/activity?limit=50&type=all").then(r => r.json()),
+    queryFn: () => fetchJson<{ data: ActivityType[] }>("/api/activity?limit=50&type=all"),
   });
   const allActivities = allData?.data ?? [];
+
+  // Clear the unread badge when you open the Activity feed — viewing the page
+  // counts as seeing it. Without this the sidebar badge sticks forever, since
+  // nothing else marks these read on visit (only the manual button / per-row toggle).
+  // A short delay lets the unread highlights show briefly before they settle.
+  const autoReadDoneRef = useRef(false);
+  useEffect(() => {
+    if (autoReadDoneRef.current) return;
+    if (!allActivities.some((a) => !a.isRead)) return;
+    autoReadDoneRef.current = true;
+    const t = setTimeout(() => markAllReadMutation.mutate({ silent: true }), 1200);
+    return () => clearTimeout(t);
+  }, [allActivities]);
 
   const stats = useMemo(() => {
     const todayItems = allActivities.filter(a => isToday(parseISO(a.timestamp)));
@@ -139,7 +155,7 @@ export default function Activity() {
   return (
     <div className="flex flex-col h-[calc(100vh-var(--topbar-height))]">
       {/* Stats bar */}
-      <div className="px-6 py-4 border-b grid grid-cols-4 gap-4 flex-shrink-0">
+      <div className="px-6 py-4 border-b grid grid-cols-2 sm:grid-cols-4 gap-4 flex-shrink-0">
         {[
           { value: stats.todayCount, label: "events today" },
           { value: stats.filesChanged, label: "files changed" },
@@ -192,14 +208,25 @@ export default function Activity() {
 
       {/* Activity feed */}
       <div className="flex-1 overflow-y-auto px-6">
-        {filtered.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-16">
-            <ActivityIcon size={40} className="text-muted-foreground/30 mb-3" />
-            <p className="text-sm text-muted-foreground">No activity matches this filter</p>
-            <Button variant="ghost" size="sm" className="mt-2" onClick={() => setActiveFilter("all")}>
-              Clear filter
-            </Button>
+        {isLoading ? (
+          <div className="py-4">
+            <LoadingList count={6} rowClassName="h-14 w-full" />
           </div>
+        ) : error ? (
+          <ErrorState message={getQueryErrorMessage(error) ?? "Unable to load activity."} className="py-16" />
+        ) : filtered.length === 0 ? (
+          <EmptyState
+            icon={ActivityIcon}
+            title={search || activeFilter !== "all" ? "No activity matches this filter" : "No recent activity"}
+            className="py-16"
+            action={
+              (search || activeFilter !== "all") ? (
+                <Button variant="ghost" size="sm" onClick={() => { setActiveFilter("all"); setSearch(""); }}>
+                  Clear filter
+                </Button>
+              ) : undefined
+            }
+          />
         ) : (
           grouped.map(group => (
             <div key={group.label}>
@@ -254,6 +281,7 @@ export default function Activity() {
                         variant="ghost"
                         size="icon"
                         className="h-7 w-7"
+                        aria-label={item.isRead ? "Mark as unread" : "Mark as read"}
                         onClick={() => markReadMutation.mutate(item.id)}
                       >
                         {item.isRead ? <EyeOff size={14} /> : <Eye size={14} />}
@@ -262,6 +290,7 @@ export default function Activity() {
                         variant="ghost"
                         size="icon"
                         className="h-7 w-7"
+                        aria-label={`Open ${item.type}`}
                         onClick={() => showToast(`Opening ${item.type}…`)}
                       >
                         <ExternalLink size={14} />

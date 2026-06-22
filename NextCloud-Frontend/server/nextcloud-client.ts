@@ -114,6 +114,7 @@ function parseDavResponses(xml: string, username: string, parentPath: string) {
     const contentLength = Number(extractTagValue(block, "getcontentlength") || 0);
     const lastModified = extractTagValue(block, "getlastmodified");
     const isFolder = /<(?:\w+:)?collection\s*\/?>/i.test(block);
+    const favourite = extractTagValue(block, "favorite") === "1";
     const davPrefix = `/remote.php/dav/files/${encodeURIComponent(username)}`;
     const cloudPathRaw = hrefPath.startsWith(davPrefix) ? hrefPath.slice(davPrefix.length) || "/" : hrefPath;
     const cloudPath = normalizeCloudPath(cloudPathRaw);
@@ -127,7 +128,7 @@ function parseDavResponses(xml: string, username: string, parentPath: string) {
       size: Number.isFinite(contentLength) ? contentLength : 0,
       modifiedAt: lastModified ? new Date(lastModified).toISOString() : new Date().toISOString(),
       sharedWith: null,
-      isFavourite: false,
+      isFavourite: favourite,
       parentPath: normalizeCloudPath(parentPath),
       ownerId: 1,
     });
@@ -270,13 +271,14 @@ export async function listFiles(session: NextcloudSession, parentPath: string) {
       "Content-Type": "application/xml; charset=utf-8",
     },
     body: `<?xml version="1.0"?>
-<d:propfind xmlns:d="DAV:">
+<d:propfind xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">
   <d:prop>
     <d:displayname />
     <d:getcontentlength />
     <d:getcontenttype />
     <d:getlastmodified />
     <d:resourcetype />
+    <oc:favorite />
   </d:prop>
 </d:propfind>`,
   });
@@ -335,6 +337,36 @@ export async function listMediaFiles(
       ...file,
       mediaKind: file.mimeType?.startsWith("video/") ? "video" : "image",
     })) satisfies CloudMediaFile[];
+}
+
+// Server-generated thumbnail via Nextcloud's core preview endpoint (much smaller
+// than the full file, so the gallery grid doesn't download originals).
+export async function getMediaThumbnail(session: NextcloudSession, cloudPath: string, size = 256) {
+  const clamped = Math.min(Math.max(size, 32), 1024);
+  const file = encodeURIComponent(normalizeCloudPath(cloudPath));
+  const response = await nextcloudFetch(
+    session,
+    `/index.php/core/preview.png?file=${file}&x=${clamped}&y=${clamped}&a=1&mode=cover`,
+  );
+  if (!response.ok) return null;
+  const buffer = Buffer.from(await response.arrayBuffer());
+  return { buffer, contentType: response.headers.get("content-type") || "image/png" };
+}
+
+// Toggle Nextcloud's native favorite flag (oc:favorite) on a file via PROPPATCH.
+export async function setFileFavorite(session: NextcloudSession, cloudPath: string, favorite: boolean) {
+  const response = await nextcloudFetch(session, toDavUrl(session.username, cloudPath), {
+    method: "PROPPATCH",
+    headers: { "Content-Type": "application/xml; charset=utf-8" },
+    body: `<?xml version="1.0"?>
+<d:propertyupdate xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">
+  <d:set><d:prop><oc:favorite>${favorite ? 1 : 0}</oc:favorite></d:prop></d:set>
+</d:propertyupdate>`,
+  });
+  if (response.status !== 207 && !response.ok) {
+    throw new Error(`Setting favorite failed: ${response.status}`);
+  }
+  return { favorite };
 }
 
 export async function createFolder(session: NextcloudSession, parentPath: string, name: string) {
@@ -439,6 +471,166 @@ export async function createPublicShareLink(session: NextcloudSession, cloudPath
   }
 }
 
+export type ShareRecord = {
+  id: string;
+  shareType: number; // 0 = registered user, 3 = public link
+  shareWith: string | null;
+  shareWithDisplayName: string | null;
+  permissions: number;
+  url: string | null;
+  token: string | null;
+  path: string;
+};
+
+function mapShare(raw: Record<string, any>): ShareRecord {
+  return {
+    id: String(raw.id),
+    shareType: Number(raw.share_type),
+    shareWith: raw.share_with != null ? String(raw.share_with) : null,
+    shareWithDisplayName:
+      raw.share_with_displayname != null
+        ? String(raw.share_with_displayname)
+        : raw.share_with != null
+          ? String(raw.share_with)
+          : null,
+    permissions: Number(raw.permissions || 0),
+    url: raw.url ? String(raw.url) : null,
+    token: raw.token ? String(raw.token) : null,
+    path: String(raw.path || ""),
+  };
+}
+
+const SHARES_API = "/ocs/v2.php/apps/files_sharing/api/v1/shares";
+
+export async function listShares(session: NextcloudSession, cloudPath: string): Promise<ShareRecord[]> {
+  const response = await nextcloudJson<{ ocs?: { data?: Record<string, any>[] } }>(
+    session,
+    `${SHARES_API}?path=${encodeURIComponent(cloudPath)}&reshares=false&format=json`,
+  );
+  const data = response.ocs?.data;
+  return Array.isArray(data) ? data.map(mapShare) : [];
+}
+
+export async function createShare(
+  session: NextcloudSession,
+  options: { path: string; shareType: number; shareWith?: string; permissions?: number },
+): Promise<ShareRecord> {
+  const body: Record<string, unknown> = {
+    path: options.path,
+    shareType: options.shareType,
+  };
+  if (options.shareWith) body.shareWith = options.shareWith;
+  if (typeof options.permissions === "number") body.permissions = options.permissions;
+
+  // Use the raw fetch so we can surface Nextcloud's OCS error message (e.g. "already shared").
+  const response = await nextcloudFetch(session, `${SHARES_API}?format=json`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "OCS-APIRequest": "true",
+      Accept: "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+
+  const payload = (await response.json().catch(() => null)) as
+    | { ocs?: { data?: Record<string, any>; meta?: { message?: string } } }
+    | null;
+
+  if (!response.ok) {
+    throw new Error(payload?.ocs?.meta?.message || `Unable to create share (${response.status}).`);
+  }
+  return mapShare(payload?.ocs?.data || {});
+}
+
+export type IncomingShare = {
+  id: string;
+  path: string; // location in the recipient's own file space (file_target)
+  name: string;
+  itemType: "file" | "folder";
+  ownerId: string;
+  ownerDisplayName: string;
+  permissions: number;
+  sharedAt: string;
+};
+
+export async function listIncomingShares(session: NextcloudSession): Promise<IncomingShare[]> {
+  const response = await nextcloudJson<{ ocs?: { data?: Record<string, any>[] } }>(
+    session,
+    `${SHARES_API}?shared_with_me=true&format=json`,
+  );
+  const data = response.ocs?.data;
+  if (!Array.isArray(data)) return [];
+  return data.map((raw) => {
+    const target = String(raw.file_target || raw.path || "");
+    const name = target.split("/").filter(Boolean).at(-1) || target || "Shared item";
+    return {
+      id: String(raw.id),
+      path: normalizeCloudPath(target),
+      name,
+      itemType: raw.item_type === "folder" ? "folder" : "file",
+      ownerId: String(raw.uid_owner || ""),
+      ownerDisplayName: String(raw.displayname_owner || raw.uid_owner || "Someone"),
+      permissions: Number(raw.permissions || 0),
+      sharedAt: raw.stime ? new Date(Number(raw.stime) * 1000).toISOString() : new Date().toISOString(),
+    };
+  });
+}
+
+export type OutgoingShare = {
+  id: string;
+  path: string;
+  name: string;
+  itemType: "file" | "folder";
+  shareType: number; // 0 = registered user, 3 = public link
+  shareWith: string | null;
+  shareWithDisplayName: string | null;
+  permissions: number;
+  url: string | null;
+  sharedAt: string;
+};
+
+export async function listOutgoingShares(session: NextcloudSession): Promise<OutgoingShare[]> {
+  // No path + no shared_with_me => every share the current user has created.
+  const response = await nextcloudJson<{ ocs?: { data?: Record<string, any>[] } }>(
+    session,
+    `${SHARES_API}?format=json`,
+  );
+  const data = response.ocs?.data;
+  if (!Array.isArray(data)) return [];
+  return data.map((raw) => {
+    const p = String(raw.path || raw.file_target || "");
+    const name = p.split("/").filter(Boolean).at(-1) || p || "Item";
+    return {
+      id: String(raw.id),
+      path: normalizeCloudPath(p),
+      name,
+      itemType: raw.item_type === "folder" ? "folder" : "file",
+      shareType: Number(raw.share_type),
+      shareWith: raw.share_with != null ? String(raw.share_with) : null,
+      shareWithDisplayName:
+        raw.share_with_displayname != null
+          ? String(raw.share_with_displayname)
+          : raw.share_with != null
+            ? String(raw.share_with)
+            : null,
+      permissions: Number(raw.permissions || 0),
+      url: raw.url ? String(raw.url) : null,
+      sharedAt: raw.stime ? new Date(Number(raw.stime) * 1000).toISOString() : new Date().toISOString(),
+    };
+  });
+}
+
+export async function deleteShare(session: NextcloudSession, shareId: string): Promise<void> {
+  const response = await nextcloudFetch(session, `${SHARES_API}/${encodeURIComponent(shareId)}?format=json`, {
+    method: "DELETE",
+    headers: { "OCS-APIRequest": "true", Accept: "application/json" },
+  });
+  if (!response.ok) {
+    throw new Error(`Unable to remove share (${response.status}).`);
+  }
+}
+
 export async function deleteFile(session: NextcloudSession, cloudPath: string) {
   const response = await nextcloudFetch(session, toDavUrl(session.username, cloudPath), {
     method: "DELETE",
@@ -449,6 +641,38 @@ export async function deleteFile(session: NextcloudSession, cloudPath: string) {
   }
 
   return { success: true };
+}
+
+export async function fetchNextcloudActivity(session: NextcloudSession, limit = 5) {
+  const response = await nextcloudJson<{
+    ocs?: {
+      data?: Array<{
+        activity_id: number;
+        type: string;
+        subject: string;
+        datetime: string;
+        icon?: string;
+        link?: string;
+      }>;
+    };
+  }>(session, `/ocs/v2.php/apps/activity/api/v2/activity?format=json&limit=${limit}`);
+
+  const entries = response.ocs?.data || [];
+  return entries.map((entry) => {
+    let activityType = "system";
+    const t = entry.type || "";
+    if (t.includes("file") || t.includes("shared")) activityType = "file";
+    else if (t.includes("share")) activityType = "share";
+    else if (t.includes("comment")) activityType = "comment";
+    else if (t.includes("spreed") || t.includes("call")) activityType = "talk";
+
+    return {
+      id: entry.activity_id,
+      type: activityType,
+      description: entry.subject,
+      timestamp: entry.datetime || new Date().toISOString(),
+    };
+  });
 }
 
 export async function getDashboardData(
@@ -489,13 +713,14 @@ export async function getDashboardData(
     : [];
 
   return {
+    displayName: user.name || session.username,
     recentFiles,
     upcomingEvents,
     unreadMessages,
     recentMessages,
     storageUsed: user.storageUsed || 0,
     storageQuota: user.storageQuota || 0,
-    recentActivity: options.includeMockData ? storage.getActivities().slice(0, 4) : [],
+    recentActivity: options.includeMockData ? storage.getActivities().slice(0, 5) : [],
     integrationMode: options.includeMockData ? "mixed" : "nextcloud-only",
   };
 }

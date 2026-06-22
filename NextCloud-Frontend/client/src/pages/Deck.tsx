@@ -20,7 +20,8 @@ import type { Board, Stack, Card } from "@shared/schema";
 
 // ─── Types ─────────────────────────────────────────────────
 type StackWithCards = Stack & { cards: Card[] };
-type BoardData = { board: Board; stacks: StackWithCards[] };
+type BoardMember = { uid: string; displayName: string };
+type BoardData = { board: Board; stacks: StackWithCards[]; members?: BoardMember[] };
 
 // ─── Toast helper ──────────────────────────────────────────
 let toastTimeout: ReturnType<typeof setTimeout>;
@@ -62,17 +63,15 @@ const COLUMN_COLORS: Record<string, string> = {
   "Done": "border-t-green-400",
 };
 
-const DEFAULT_TEAM = ["Rohan Mehra", "Priya Kapoor", "Arjun Singh", "Neha Joshi"];
-
 // ─── Card Detail Modal ─────────────────────────────────────
 function CardDetailModal({
-  card, stacks, open, onOpenChange, currentUserName,
+  card, stacks, open, onOpenChange, members,
 }: {
   card: Card;
   stacks: StackWithCards[];
   open: boolean;
   onOpenChange: (v: boolean) => void;
-  currentUserName: string;
+  members: BoardMember[];
 }) {
   const queryClient = useQueryClient();
   const [title, setTitle] = useState(card.title);
@@ -104,11 +103,6 @@ function CardDetailModal({
   const [labelInput, setLabelInput] = useState("");
   const [localLabels, setLocalLabels] = useState(labels);
 
-  const currentStack = stacks.find(s => s.id === card.stackId);
-  const team = useMemo(
-    () => [currentUserName, ...DEFAULT_TEAM.filter((member) => member !== currentUserName)],
-    [currentUserName],
-  );
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -136,36 +130,6 @@ function CardDetailModal({
               />
             </div>
 
-            {/* Activity */}
-            <div className="border-t pt-4 mt-4">
-              <p className="text-sm font-semibold mb-3">Activity</p>
-              <div className="flex items-start gap-2 mb-4">
-                <div className={cn("w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-semibold flex-shrink-0", getAvatarColor(currentUserName))}>
-                  {getInitials(currentUserName)}
-                </div>
-                <div className="flex-1">
-                  <Textarea className="min-h-[60px] text-sm" placeholder="Write a comment…" />
-                  <Button size="sm" className="mt-1">Post</Button>
-                </div>
-              </div>
-              {/* Mock comments */}
-              <div className="space-y-3">
-                <div className="flex items-start gap-2">
-                  <div className={cn("w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-semibold flex-shrink-0", getAvatarColor("Rohan Mehra"))}>RM</div>
-                  <div>
-                    <p className="text-xs font-medium">Rohan Mehra <span className="text-muted-foreground font-normal">· 2 hours ago</span></p>
-                    <p className="text-sm">Looks good — let's finalize by EOD</p>
-                  </div>
-                </div>
-                <div className="flex items-start gap-2">
-                  <div className={cn("w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-semibold flex-shrink-0", getAvatarColor(currentUserName))}>{getInitials(currentUserName)}</div>
-                  <div>
-                    <p className="text-xs font-medium">{currentUserName} <span className="text-muted-foreground font-normal">· 5 hours ago</span></p>
-                    <p className="text-sm">Added to sprint</p>
-                  </div>
-                </div>
-              </div>
-            </div>
           </div>
 
           {/* Right column */}
@@ -209,8 +173,8 @@ function CardDetailModal({
                 <SelectTrigger className="mt-1"><SelectValue placeholder="Unassigned" /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="unassigned">Unassigned</SelectItem>
-                  {team.map(t => (
-                    <SelectItem key={t} value={t}>{t}</SelectItem>
+                  {members.map(m => (
+                    <SelectItem key={m.uid} value={m.uid}>{m.displayName}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
@@ -284,7 +248,7 @@ function CardDetailModal({
 }
 
 // ─── Kanban Card ───────────────────────────────────────────
-function KanbanCard({ card, index, onClick }: { card: Card; index: number; onClick: () => void }) {
+function KanbanCard({ card, index, onClick, assigneeName }: { card: Card; index: number; onClick: () => void; assigneeName: string }) {
   const labels: string[] = card.labels ? (() => { try { return JSON.parse(card.labels); } catch { return []; } })() : [];
 
   return (
@@ -328,11 +292,14 @@ function KanbanCard({ card, index, onClick }: { card: Card; index: number; onCli
               )}
             </div>
             {card.assignee && (
-              <div className={cn(
-                "w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-semibold flex-shrink-0",
-                getAvatarColor(card.assignee)
-              )}>
-                {getInitials(card.assignee)}
+              <div
+                className={cn(
+                  "w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-semibold flex-shrink-0",
+                  getAvatarColor(assigneeName || card.assignee)
+                )}
+                title={assigneeName || card.assignee}
+              >
+                {getInitials(assigneeName || card.assignee)}
               </div>
             )}
           </div>
@@ -344,15 +311,20 @@ function KanbanCard({ card, index, onClick }: { card: Card; index: number; onCli
 
 // ─── Kanban Column ─────────────────────────────────────────
 function KanbanColumn({
-  stack, cards, onCardClick, onAddCard,
+  stack, cards, onCardClick, onAddCard, onRename, onDelete, getMemberName,
 }: {
   stack: Stack;
   cards: Card[];
   onCardClick: (c: Card) => void;
   onAddCard: (stackId: number, title: string) => void;
+  onRename: (stackId: number, title: string) => void;
+  onDelete: (stack: StackWithCards) => void;
+  getMemberName: (uid: string | null | undefined) => string;
 }) {
   const [adding, setAdding] = useState(false);
   const [newTitle, setNewTitle] = useState("");
+  const [renaming, setRenaming] = useState(false);
+  const [renameValue, setRenameValue] = useState(stack.title);
 
   const handleAdd = () => {
     if (newTitle.trim()) {
@@ -362,14 +334,34 @@ function KanbanColumn({
     }
   };
 
+  const commitRename = () => {
+    const t = renameValue.trim();
+    if (t && t !== stack.title) onRename(stack.id, t);
+    setRenaming(false);
+  };
+
   const colorClass = COLUMN_COLORS[stack.title] ?? "border-t-primary";
 
   return (
     <div className={cn("w-72 flex-shrink-0 flex flex-col max-h-full rounded-lg border-t-2", colorClass)}>
       {/* Header */}
-      <div className="flex items-center justify-between px-3 py-2">
-        <span className="text-sm font-semibold">{stack.title}</span>
-        <div className="flex items-center gap-1">
+      <div className="flex items-center justify-between px-3 py-2 gap-1">
+        {renaming ? (
+          <Input
+            autoFocus
+            className="h-7 text-sm"
+            value={renameValue}
+            onChange={e => setRenameValue(e.target.value)}
+            onBlur={commitRename}
+            onKeyDown={e => {
+              if (e.key === "Enter") commitRename();
+              if (e.key === "Escape") { setRenameValue(stack.title); setRenaming(false); }
+            }}
+          />
+        ) : (
+          <span className="text-sm font-semibold truncate">{stack.title}</span>
+        )}
+        <div className="flex items-center gap-1 flex-shrink-0">
           <span className="bg-muted text-muted-foreground text-xs rounded-full px-2 py-0.5">{cards.length}</span>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -378,8 +370,8 @@ function KanbanColumn({
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={() => showToast("Rename column coming soon")}>Rename column</DropdownMenuItem>
-              <DropdownMenuItem onClick={() => showToast("Delete column coming soon")}>Delete column</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => { setRenameValue(stack.title); setRenaming(true); }}>Rename column</DropdownMenuItem>
+              <DropdownMenuItem className="text-destructive" onClick={() => onDelete({ ...stack, cards })}>Delete column</DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
@@ -397,7 +389,7 @@ function KanbanColumn({
             )}
           >
             {cards.map((card, index) => (
-              <KanbanCard key={card.id} card={card} index={index} onClick={() => onCardClick(card)} />
+              <KanbanCard key={card.id} card={card} index={index} onClick={() => onCardClick(card)} assigneeName={getMemberName(card.assignee)} />
             ))}
             {provided.placeholder}
           </div>
@@ -436,11 +428,6 @@ function KanbanColumn({
 // ─── Main Deck Page ────────────────────────────────────────
 export default function Deck() {
   const queryClient = useQueryClient();
-  const { data: currentUserData } = useQuery<{ data: { name?: string } }>({
-    queryKey: ["/api/user"],
-    queryFn: () => fetchJson<{ data: { name?: string } }>("/api/user"),
-  });
-  const currentUserName = currentUserData?.data?.name || "You";
 
   // Fetch boards list
   const { data: boardsData } = useQuery<{ data: Board[] }>({
@@ -469,6 +456,12 @@ export default function Deck() {
 
   const board = boardData?.data?.board;
   const apiStacks = boardData?.data?.stacks ?? [];
+  const members = boardData?.data?.members ?? [];
+  // Resolve an assignee uid to a display name (Deck stores assignees by uid).
+  const memberName = useCallback(
+    (uid: string | null | undefined) => (uid ? (members.find((m) => m.uid === uid)?.displayName || uid) : ""),
+    [members],
+  );
 
   // Local state for optimistic drag-and-drop
   const [localStacks, setLocalStacks] = useState<StackWithCards[]>([]);
@@ -476,10 +469,22 @@ export default function Deck() {
     if (apiStacks.length > 0) setLocalStacks(apiStacks);
   }, [apiStacks]);
 
-  const [activeCard, setActiveCard] = useState<Card | null>(null);
+  const [activeCardId, setActiveCardId] = useState<number | null>(null);
   const [filterAssignee, setFilterAssignee] = useState<string | null>(null);
   const [newStackName, setNewStackName] = useState("");
   const [showNewStack, setShowNewStack] = useState(false);
+  const [confirmDeleteStack, setConfirmDeleteStack] = useState<StackWithCards | null>(null);
+
+  // Derive the open card from live board data so edits (priority, status, due date)
+  // reflect immediately instead of showing a frozen snapshot.
+  const activeCard = useMemo(() => {
+    if (activeCardId == null) return null;
+    for (const s of localStacks) {
+      const found = s.cards.find((c) => c.id === activeCardId);
+      if (found) return found;
+    }
+    return null;
+  }, [localStacks, activeCardId]);
 
   // All unique assignees
   const assignees = useMemo(() => {
@@ -538,6 +543,23 @@ export default function Deck() {
       setShowNewStack(false);
       setNewStackName("");
     },
+  });
+
+  const renameStackMutation = useMutation({
+    mutationFn: ({ stackId, title }: { stackId: number; title: string }) =>
+      apiRequest("PATCH", `/api/boards/${resolvedBoardId}/stacks/${stackId}`, { title }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/boards/", resolvedBoardId] }),
+    onError: () => showToast("Failed to rename column"),
+  });
+
+  const deleteStackMutation = useMutation({
+    mutationFn: (stackId: number) => apiRequest("DELETE", `/api/boards/${resolvedBoardId}/stacks/${stackId}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/boards/", resolvedBoardId] });
+      setConfirmDeleteStack(null);
+      showToast("Column deleted");
+    },
+    onError: () => showToast("Failed to delete column"),
   });
 
   const createBoardMutation = useMutation({
@@ -626,12 +648,12 @@ export default function Deck() {
               onClick={() => setFilterAssignee(filterAssignee === a ? null : a)}
               className={cn(
                 "w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-semibold transition-all",
-                getAvatarColor(a),
+                getAvatarColor(memberName(a) || a),
                 filterAssignee === a && "ring-2 ring-primary ring-offset-1"
               )}
-              title={a}
+              title={memberName(a) || a}
             >
-              {getInitials(a)}
+              {getInitials(memberName(a) || a)}
             </button>
           ))}
         </div>
@@ -689,8 +711,11 @@ export default function Deck() {
               key={stack.id}
               stack={stack}
               cards={stack.cards}
-              onCardClick={c => setActiveCard(c)}
+              onCardClick={c => setActiveCardId(c.id)}
               onAddCard={(stackId, title) => addCardMutation.mutate({ stackId, title })}
+              onRename={(stackId, title) => renameStackMutation.mutate({ stackId, title })}
+              onDelete={(s) => setConfirmDeleteStack(s)}
+              getMemberName={memberName}
             />
           ))}
           {resolvedBoardId === null ? (
@@ -715,11 +740,36 @@ export default function Deck() {
         <CardDetailModal
           card={activeCard}
           stacks={localStacks}
-          currentUserName={currentUserName}
+          members={members}
           open={!!activeCard}
-          onOpenChange={v => { if (!v) setActiveCard(null); }}
+          onOpenChange={v => { if (!v) setActiveCardId(null); }}
         />
       )}
+
+      {/* Delete column confirmation */}
+      <Dialog open={!!confirmDeleteStack} onOpenChange={(v) => { if (!v) setConfirmDeleteStack(null); }}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Delete column?</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground pt-1">
+            This deletes <span className="font-medium text-foreground">{confirmDeleteStack?.title}</span>
+            {confirmDeleteStack && confirmDeleteStack.cards.length > 0
+              ? <> and its <span className="font-medium text-foreground">{confirmDeleteStack.cards.length}</span> card{confirmDeleteStack.cards.length === 1 ? "" : "s"}</>
+              : null}. This can't be undone.
+          </p>
+          <div className="flex justify-end gap-2 pt-4">
+            <Button variant="outline" onClick={() => setConfirmDeleteStack(null)}>Cancel</Button>
+            <Button
+              variant="destructive"
+              disabled={deleteStackMutation.isPending}
+              onClick={() => { if (confirmDeleteStack) deleteStackMutation.mutate(confirmDeleteStack.id); }}
+            >
+              {deleteStackMutation.isPending ? "Deleting…" : "Delete column"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
