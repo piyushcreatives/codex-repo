@@ -6,11 +6,22 @@ const NEXTCLOUD_APP_PASSWORD_LABEL =
 const NEXTCLOUD_BOOTSTRAP_STRATEGY =
   process.env.NEXTCLOUD_BOOTSTRAP_STRATEGY || "exchange-or-direct";
 
+// Keycloak SSO via Nextcloud OAuth2 (see OAUTH_MIGRATION.md).
+const OAUTH_CLIENT_ID = process.env.OAUTH_CLIENT_ID || "";
+const OAUTH_CLIENT_SECRET = process.env.OAUTH_CLIENT_SECRET || "";
+const OAUTH_REDIRECT_URI = process.env.OAUTH_REDIRECT_URI || "";
+
 export type DelegatedCredential = {
   type: "app-password";
   secret: string;
   source: "bootstrap-exchange" | "user-supplied";
   createdAt: string;
+};
+
+export type OAuthTokens = {
+  accessToken: string;
+  refreshToken: string;
+  expiresAt: number; // epoch ms
 };
 
 export type NextcloudWebSession = {
@@ -20,10 +31,19 @@ export type NextcloudWebSession = {
 
 export type NextcloudSession = {
   username: string;
-  credential: DelegatedCredential;
+  credential?: DelegatedCredential; // app-password path (username/password login)
+  oauth?: OAuthTokens;              // OAuth/Keycloak path (Bearer token login)
   displayNameOverride?: string;
   webSession?: NextcloudWebSession;
 };
+
+// Single source of truth for the Nextcloud Authorization header: Bearer for OAuth
+// sessions, Basic (app-password) otherwise. Every server-side NC call uses this.
+export function nextcloudAuthHeaderValue(session: NextcloudSession): string {
+  if (session.oauth?.accessToken) return `Bearer ${session.oauth.accessToken}`;
+  if (session.credential?.secret) return `Basic ${toBasicAuth(session.username, session.credential.secret)}`;
+  throw new Error("Nextcloud session has no usable credential");
+}
 
 type NextcloudUserPayload = {
   ocs?: {
@@ -175,6 +195,10 @@ export async function bootstrapDelegatedSession(identifier: string, loginSecret:
 }
 
 export async function revokeDelegatedCredential(session: NextcloudSession) {
+  // Only app-password sessions have a revocable credential. OAuth sessions are
+  // ended by dropping the local session (the access token expires on its own).
+  if (!session.credential?.secret) return;
+
   const response = await fetch(`${NC_BASE_URL}/ocs/v2.php/core/apppassword`, {
     method: "DELETE",
     headers: buildAuthHeaders(session.username, session.credential.secret, {
@@ -194,12 +218,22 @@ export async function revokeDelegatedCredential(session: NextcloudSession) {
   throw new Error(`App password revocation failed: ${response.status}`);
 }
 
+async function nextcloudJsonAsSession(session: NextcloudSession, path: string) {
+  const response = await fetch(`${NC_BASE_URL}${path}`, {
+    headers: {
+      Authorization: nextcloudAuthHeaderValue(session),
+      "OCS-APIRequest": "true",
+      Accept: "application/json",
+    },
+  });
+  if (!response.ok) {
+    throw new Error(`Nextcloud request failed: ${response.status} ${path}`);
+  }
+  return response.json() as Promise<NextcloudUserPayload>;
+}
+
 export async function resolveCurrentUser(session: NextcloudSession) {
-  const payload = await nextcloudJsonWithSecret(
-    session.username,
-    session.credential.secret,
-    "/ocs/v2.php/cloud/user?format=json",
-  );
+  const payload = await nextcloudJsonAsSession(session, "/ocs/v2.php/cloud/user?format=json");
 
   const mapped = mapNextcloudUser(payload);
   if (session.displayNameOverride) {
@@ -210,4 +244,77 @@ export async function resolveCurrentUser(session: NextcloudSession) {
   }
 
   return mapped;
+}
+
+// ── OAuth2 (Keycloak via Nextcloud) ─────────────────────────────────────────
+export function isOAuthConfigured() {
+  return Boolean(OAUTH_CLIENT_ID && OAUTH_CLIENT_SECRET && OAUTH_REDIRECT_URI);
+}
+
+export function buildAuthorizeUrl(state: string) {
+  const params = new URLSearchParams({
+    response_type: "code",
+    client_id: OAUTH_CLIENT_ID,
+    redirect_uri: OAUTH_REDIRECT_URI,
+    state,
+  });
+  return `${NC_BASE_URL}/index.php/apps/oauth2/authorize?${params.toString()}`;
+}
+
+async function oauthTokenRequest(body: Record<string, string>) {
+  const response = await fetch(`${NC_BASE_URL}/index.php/apps/oauth2/api/v1/token`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      Authorization: "Basic " + Buffer.from(`${OAUTH_CLIENT_ID}:${OAUTH_CLIENT_SECRET}`).toString("base64"),
+    },
+    body: new URLSearchParams(body).toString(),
+  });
+  if (!response.ok) {
+    throw new Error(`OAuth token request failed: ${response.status}`);
+  }
+  return response.json() as Promise<{
+    access_token: string;
+    refresh_token: string;
+    expires_in: number;
+    user_id: string;
+  }>;
+}
+
+export async function exchangeOAuthCode(code: string) {
+  const tok = await oauthTokenRequest({
+    grant_type: "authorization_code",
+    code,
+    redirect_uri: OAUTH_REDIRECT_URI,
+  });
+  const session: NextcloudSession = {
+    username: tok.user_id,
+    oauth: {
+      accessToken: tok.access_token,
+      refreshToken: tok.refresh_token,
+      expiresAt: Date.now() + tok.expires_in * 1000,
+    },
+  };
+  const user = await resolveCurrentUser(session);
+  return { session, user };
+}
+
+// Refresh the access token in place (mutates session.oauth). Returns false if it
+// couldn't be refreshed (e.g. refresh token revoked) so the caller can re-auth.
+export async function refreshOAuthTokens(session: NextcloudSession): Promise<boolean> {
+  if (!session.oauth?.refreshToken) return false;
+  try {
+    const tok = await oauthTokenRequest({
+      grant_type: "refresh_token",
+      refresh_token: session.oauth.refreshToken,
+    });
+    session.oauth = {
+      accessToken: tok.access_token,
+      refreshToken: tok.refresh_token || session.oauth.refreshToken,
+      expiresAt: Date.now() + tok.expires_in * 1000,
+    };
+    return true;
+  } catch {
+    return false;
+  }
 }

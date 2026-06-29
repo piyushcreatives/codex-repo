@@ -1,4 +1,4 @@
-import type { NextcloudSession } from "./credential-provider";
+import { nextcloudAuthHeaderValue, type NextcloudSession } from "./credential-provider";
 
 const NC_BASE_URL = process.env.NC_BASE_URL || "http://localhost:8090";
 const SERVICE_USERNAME =
@@ -128,7 +128,7 @@ async function buildSnapshot(headers: HeadersInit, source: CapabilitySnapshot["s
 
 function sessionHeaders(session: NextcloudSession) {
   return {
-    Authorization: `Basic ${toBasicAuth(session.username, session.credential.secret)}`,
+    Authorization: nextcloudAuthHeaderValue(session),
     "OCS-APIRequest": "true",
     Accept: "application/json",
   };

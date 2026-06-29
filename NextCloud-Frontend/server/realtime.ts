@@ -128,10 +128,13 @@ function connectNotifyPush(username: string, watcher: Watcher, endpoint: string)
   let authenticated = false;
 
   ws.on("open", () => {
-    // notify_push auth: send username, then the app-password.
+    // notify_push auth: send username, then the credential (app-password, or the
+    // OAuth access token for SSO sessions). If notify_push rejects it, we fall back to polling.
+    const secret = watcher.session.oauth?.accessToken || watcher.session.credential?.secret;
+    if (!secret) { try { ws.close(); } catch { /* noop */ } startPolling(username, watcher); return; }
     try {
       ws.send(username);
-      ws.send(watcher.session.credential.secret);
+      ws.send(secret);
     } catch {
       /* close handler falls back */
     }

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { NextcloudSession } from "./credential-provider";
+import { nextcloudAuthHeaderValue, type NextcloudSession } from "./credential-provider";
 import { nextcloudWebSessionJson } from "./nextcloud-web-session";
 
 const NC_BASE_URL = process.env.NC_BASE_URL || "http://localhost:8090";
@@ -216,10 +216,6 @@ type CloudMailMessage = {
   hasAttachment: boolean;
 };
 
-function toBasicAuth(session: NextcloudSession) {
-  return Buffer.from(`${session.username}:${session.credential.secret}`).toString("base64");
-}
-
 function hashToId(value: string) {
   const digest = createHash("sha1").update(value).digest("hex").slice(0, 8);
   return parseInt(digest, 16);
@@ -258,7 +254,7 @@ function cloudPathToDavUrl(prefix: "files" | "addressbooks" | "calendars", usern
 
 function buildHeaders(session: NextcloudSession, headers?: HeadersInit) {
   const nextHeaders = new Headers(headers);
-  nextHeaders.set("Authorization", `Basic ${toBasicAuth(session)}`);
+  nextHeaders.set("Authorization", nextcloudAuthHeaderValue(session));
   return nextHeaders;
 }
 

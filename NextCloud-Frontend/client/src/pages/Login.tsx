@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { Eye, EyeOff, Building2, Loader2 } from "lucide-react";
@@ -18,6 +18,15 @@ export default function Login() {
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [oauthEnabled, setOauthEnabled] = useState(false);
+
+  // Show the SSO button only if the adapter has an OAuth/Keycloak client configured.
+  useEffect(() => {
+    fetch("/api/auth/methods")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((m) => setOauthEnabled(Boolean(m?.data?.oauth)))
+      .catch(() => undefined);
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -155,9 +164,15 @@ export default function Login() {
             </div>
           </div>
 
-          <Button variant="outline" className="w-full" type="button" disabled>
+          <Button
+            variant="outline"
+            className="w-full"
+            type="button"
+            disabled={!oauthEnabled}
+            onClick={() => { window.location.href = "/api/auth/oauth/start"; }}
+          >
             <Building2 className="mr-2 h-4 w-4" />
-            SSO coming in a later release
+            {oauthEnabled ? "Sign in with SSO" : "SSO not configured"}
           </Button>
 
           <p className="mt-4 text-center text-xs text-muted-foreground">Powered by Nextcloud</p>

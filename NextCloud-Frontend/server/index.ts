@@ -3,10 +3,15 @@ import express from "express";
 import https from "node:https";
 import fs from "node:fs";
 import path from "node:path";
+import { randomBytes } from "node:crypto";
 import { storage } from "./storage";
 import {
   bootstrapDelegatedSession,
   revokeDelegatedCredential,
+  isOAuthConfigured,
+  buildAuthorizeUrl,
+  exchangeOAuthCode,
+  refreshOAuthTokens,
 } from "./credential-provider";
 import { establishNextcloudWebSession } from "./nextcloud-web-session";
 import {
@@ -112,6 +117,22 @@ import { initRealtime, broadcastToConversation } from "./realtime";
 
 const app = express();
 app.use(express.json({ limit: "5mb" }));
+
+// Proactively refresh the OAuth access token before it expires, so every route
+// downstream sees a fresh Bearer token. No-op for app-password sessions.
+app.use(async (req, _res, next) => {
+  try {
+    const session = getNextcloudSession(req);
+    if (session?.oauth && Date.now() > session.oauth.expiresAt - 60_000) {
+      const ok = await refreshOAuthTokens(session);
+      if (ok) updateNextcloudSession(req, { oauth: session.oauth });
+      // If refresh failed, leave it — the request 401s and the user re-authenticates.
+    }
+  } catch {
+    /* refresh is best-effort; never block the request */
+  }
+  next();
+});
 
 const ALLOW_MOCK_SERVICES = process.env.ALLOW_MOCK_SERVICES === "true";
 
@@ -365,6 +386,50 @@ app.post("/api/auth/login", async (req, res) => {
     res.json({ ok: true, user });
   } catch {
     res.status(401).json({ ok: false, message: "Invalid Nextcloud credentials." });
+  }
+});
+
+// ── OAuth / Keycloak login (via Nextcloud OAuth2) — see OAUTH_MIGRATION.md ──
+const OAUTH_STATE_COOKIE = "cloudspace_oauth_state";
+const FRONTEND_URL = process.env.FRONTEND_URL || "/";
+const OAUTH_COOKIE_SECURE = process.env.SESSION_COOKIE_SECURE === "true" || process.env.NODE_ENV === "production";
+
+function readCookie(req: express.Request, name: string) {
+  for (const part of (req.headers.cookie || "").split(";")) {
+    const [k, ...rest] = part.trim().split("=");
+    if (k === name) return decodeURIComponent(rest.join("="));
+  }
+  return "";
+}
+
+// Which login methods the frontend should offer.
+app.get("/api/auth/methods", (_req, res) => {
+  res.json({ data: { password: true, oauth: isOAuthConfigured() } });
+});
+
+// Begin OAuth: stash a CSRF state cookie and redirect to Nextcloud's authorize endpoint.
+app.get("/api/auth/oauth/start", (_req, res) => {
+  if (!isOAuthConfigured()) return res.status(501).json({ ok: false, message: "OAuth login is not configured." });
+  const state = randomBytes(16).toString("hex");
+  res.setHeader("Set-Cookie", `${OAUTH_STATE_COOKIE}=${state}; HttpOnly; Path=/; Max-Age=600; SameSite=Lax${OAUTH_COOKIE_SECURE ? "; Secure" : ""}`);
+  res.redirect(buildAuthorizeUrl(state));
+});
+
+// OAuth redirect target: validate state, exchange the code for tokens, create the session.
+app.get("/api/auth/callback", async (req, res) => {
+  if (!isOAuthConfigured()) return res.status(501).send("OAuth login is not configured.");
+  const code = typeof req.query.code === "string" ? req.query.code : "";
+  const state = typeof req.query.state === "string" ? req.query.state : "";
+  const expected = readCookie(req, OAUTH_STATE_COOKIE);
+  if (!code) return res.status(400).send("Missing authorization code.");
+  if (!expected || state !== expected) return res.status(400).send("Invalid or expired login state — please sign in again.");
+  try {
+    const { session } = await exchangeOAuthCode(code);
+    createNextcloudSession(res, session);
+    res.append("Set-Cookie", `${OAUTH_STATE_COOKIE}=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax${OAUTH_COOKIE_SECURE ? "; Secure" : ""}`);
+    res.redirect(FRONTEND_URL);
+  } catch {
+    res.status(502).send("Sign-in failed — please try again.");
   }
 });
 

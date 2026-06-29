@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { storage } from "./storage";
 import type { NextcloudSession } from "./credential-provider";
-import { resolveCurrentUser } from "./credential-provider";
+import { resolveCurrentUser, nextcloudAuthHeaderValue } from "./credential-provider";
 
 const NC_BASE_URL = process.env.NC_BASE_URL || "http://localhost:8090";
 const SERVICE_USERNAME =
@@ -140,13 +140,9 @@ function parseDavResponses(xml: string, username: string, parentPath: string) {
   });
 }
 
-function toBasicAuth(session: NextcloudSession) {
-  return Buffer.from(`${session.username}:${session.credential.secret}`).toString("base64");
-}
-
 async function nextcloudFetch(session: NextcloudSession, path: string, init?: RequestInit) {
   const headers = new Headers(init?.headers);
-  headers.set("Authorization", `Basic ${toBasicAuth(session)}`);
+  headers.set("Authorization", nextcloudAuthHeaderValue(session));
 
   return fetch(`${NC_BASE_URL}${path}`, {
     ...init,
@@ -156,7 +152,7 @@ async function nextcloudFetch(session: NextcloudSession, path: string, init?: Re
 
 async function nextcloudJson<T>(session: NextcloudSession, path: string, init?: RequestInit) {
   const headers = new Headers(init?.headers);
-  headers.set("Authorization", `Basic ${toBasicAuth(session)}`);
+  headers.set("Authorization", nextcloudAuthHeaderValue(session));
   headers.set("Accept", "application/json");
   headers.set("OCS-APIRequest", "true");
 
