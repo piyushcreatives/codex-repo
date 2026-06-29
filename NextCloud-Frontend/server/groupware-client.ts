@@ -1138,6 +1138,23 @@ export async function removeReaction(session: NextcloudSession, conversationId: 
   return { success: true };
 }
 
+// Unsend (delete) a chat message. Nextcloud Talk replaces it with a "deleted by author"
+// tombstone, and only allows it for your own messages within the configured time window
+// (moderators can delete any). A 403/405 means it's not deletable (too old / not yours).
+export async function deleteConversationMessage(session: NextcloudSession, conversationId: number, messageId: number) {
+  const conversation = await findTalkConversation(session, conversationId);
+  if (!conversation) throw new Error("Conversation not found");
+  const response = await nextcloudFetch(
+    session,
+    `/ocs/v2.php/apps/spreed/api/v1/chat/${encodeURIComponent(conversation.token)}/${messageId}?format=json`,
+    { method: "DELETE", headers: { "OCS-APIRequest": "true", Accept: "application/json" } },
+  );
+  if (!response.ok && response.status !== 200 && response.status !== 202) {
+    throw new Error(`Deleting message failed: ${response.status}`);
+  }
+  return { success: true };
+}
+
 async function listCalendars(session: NextcloudSession) {
   return listDavCollections(session, cloudPathToDavUrl("calendars", session.username, "/"));
 }

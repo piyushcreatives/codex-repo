@@ -1,5 +1,33 @@
 # Deployment
 
+## Production topology (icingtree.com)
+
+Three hosts, **reverse-proxy model** — the browser only ever talks to the frontend origin:
+
+```
+Browser ──> https://cloud.icingtree.com            React SPA + nginx
+              ├─ /api/*  ─┐
+              └─ /ws      ├─ proxied ─> https://cloudapi.icingtree.com   Express adapter
+                          │                          └─ server-side ──> https://nc.icingtree.com   Nextcloud
+```
+
+The SPA calls **relative `/api` paths** and the frontend nginx proxies them, so requests are
+**same-origin** → no CORS, and the cookie stays `SameSite=Lax; Secure`.
+
+- **Frontend (`cloud.icingtree.com`)**: `npm run build` → serve `dist/` with
+  `nextcloud-backend/nginx.frontend.prod.conf` (serves the SPA, proxies `/api` + `/ws` to the adapter).
+- **Adapter (`cloudapi.icingtree.com`)**: run `server/index.ts` with `.env.headless.production.example`
+  (`NODE_ENV=production`, `NC_BASE_URL=https://nc.icingtree.com`, `FRONTEND_URL=https://cloud.icingtree.com`,
+  a strong `SESSION_SECRET`, `SESSION_COOKIE_SECURE=true`). Persist `sessions.db`.
+- **Nextcloud (`nc.icingtree.com`)**: `trusted_domains` + `overwritehost`/`overwriteprotocol`/`overwrite.cli.url`
+  set to `nc.icingtree.com`/`https`; reverse proxy `nextcloud-backend/nginx.prod.conf` (CORS allows
+  `https://cloud.icingtree.com`); for notify_push set `base_endpoint=https://nc.icingtree.com/push` (see `NOTIFY_PUSH.md`).
+
+Smoke test: `curl https://cloud.icingtree.com/api/auth/session` (401 unauthenticated = adapter reachable
+through the proxy) and `curl https://nc.icingtree.com/status.php` (Nextcloud up), then sign in at the frontend.
+
+---
+
 ## Required environment variables
 
 Use [`\.env.example`](C:\Users\admin\Desktop\Codex New Implementation\NextCloud-Frontend\.env.example) as the baseline.

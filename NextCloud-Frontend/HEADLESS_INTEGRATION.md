@@ -30,4 +30,4 @@ VITE_NEXTCLOUD_PROXY_TARGET=http://localhost:8090
 
 - Browser-side OAuth/PKCE helpers were removed from this repo to avoid split auth behavior.
 - Mock-backed endpoints are disabled by default. Enable them only with `ALLOW_MOCK_SERVICES=true`.
-- If the project later moves to OAuth/PKCE, use `http://localhost:5173/auth/callback` for local development.
+- OAuth/Keycloak migration is designed in `OAUTH_MIGRATION.md`; the callback is `…/api/auth/callback` (local dev: `http://localhost:5173/api/auth/callback`).

@@ -35,6 +35,7 @@ import {
   addConversationParticipant,
   addReaction,
   removeReaction,
+  deleteConversationMessage,
   removeConversationParticipant,
   createBoard,
   createCard,
@@ -1476,6 +1477,21 @@ app.delete("/api/conversations/:id/messages/:messageId/reactions", async (req, r
     broadcastToConversation(Number(req.params.id), { type: "message-changed" });
   } catch {
     res.status(502).json({ error: "Unable to remove reaction." });
+  }
+});
+
+// Unsend (delete) a chat message — own messages within the Talk time window.
+app.delete("/api/conversations/:id/messages/:messageId", async (req, res) => {
+  const session = requireNextcloudSession(req, res);
+  if (!session) return;
+  if (!(await requireCapability(session, res, "talk"))) return;
+
+  try {
+    await deleteConversationMessage(session, Number(req.params.id), Number(req.params.messageId));
+    res.json({ data: { success: true } });
+    broadcastToConversation(Number(req.params.id), { type: "message-changed" });
+  } catch {
+    res.status(502).json({ error: "Unable to unsend this message. It may be too old or not yours to delete." });
   }
 });
 

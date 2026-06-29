@@ -639,6 +639,7 @@ function MessageBubble({
   onReply,
   onForward,
   onReact,
+  onUnsend,
 }: {
   message: Message;
   isSent: boolean;
@@ -649,6 +650,7 @@ function MessageBubble({
   onReply?: (msg: Message) => void;
   onForward?: (msg: Message) => void;
   onReact?: (msgId: number, emoji: string) => void;
+  onUnsend?: (msg: Message) => void;
 }) {
   const [showActions, setShowActions] = useState(false);
   const [showReactions, setShowReactions] = useState(false);
@@ -749,6 +751,16 @@ function MessageBubble({
           </TooltipTrigger>
           <TooltipContent>Copy</TooltipContent>
         </Tooltip>
+        {isSent && onUnsend && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button onClick={() => { onUnsend(m); setShowActions(false); }} className="h-7 w-7 rounded flex items-center justify-center hover:bg-muted text-destructive">
+                <Trash2 size={14} />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>Unsend</TooltipContent>
+          </Tooltip>
+        )}
       </div>
     );
   };
@@ -4328,6 +4340,28 @@ function TalkInner() {
     textareaRef.current?.focus();
   }, []);
 
+  // Unsend (delete own message) — opens a confirm, then deletes via the Talk API.
+  const [unsendTarget, setUnsendTarget] = useState<Message | null>(null);
+  const handleUnsend = useCallback((msg: Message) => setUnsendTarget(msg), []);
+  const confirmUnsend = useCallback(async () => {
+    if (!unsendTarget || !activeConversationId) return;
+    const id = unsendTarget.id;
+    setUnsendTarget(null);
+    // Optimistically blank the bubble; the refetch reconciles to the real tombstone.
+    queryClient.setQueryData(
+      ["/api/conversations/messages", activeConversationId],
+      (old: { data: Message[] } | undefined) =>
+        old ? { data: old.data.map((msg) => (msg.id === id ? { ...msg, content: "Message deleted" } : msg)) } : old,
+    );
+    try {
+      await apiRequest("DELETE", `/api/conversations/${activeConversationId}/messages/${id}`);
+      queryClient.invalidateQueries({ queryKey: ["/api/conversations/messages", activeConversationId] });
+    } catch {
+      showToast("Couldn't unsend — the message may be too old to delete");
+      queryClient.invalidateQueries({ queryKey: ["/api/conversations/messages", activeConversationId] });
+    }
+  }, [unsendTarget, activeConversationId, queryClient, showToast]);
+
   const handleForwardMessage = useCallback((msg: Message) => {
     setForwardMessage(msg);
   }, []);
@@ -5142,6 +5176,7 @@ function TalkInner() {
                         onReply={handleReply}
                         onForward={handleForwardMessage}
                         onReact={handleReact}
+                        onUnsend={handleUnsend}
                       />
                       </div>
                     );
@@ -5446,6 +5481,23 @@ function TalkInner() {
         conversations={conversations}
         onForward={handleForwardToConversation}
       />
+
+      {/* Unsend confirmation */}
+      <Dialog open={!!unsendTarget} onOpenChange={(v) => { if (!v) setUnsendTarget(null); }}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Unsend message?</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground pt-1">
+            This deletes the message for everyone in the conversation. Nextcloud Talk only allows this
+            for your own messages within a short window after sending.
+          </p>
+          <div className="flex justify-end gap-2 pt-4">
+            <Button variant="outline" onClick={() => setUnsendTarget(null)}>Cancel</Button>
+            <Button variant="destructive" onClick={() => void confirmUnsend()}>Unsend</Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }
