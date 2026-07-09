@@ -15,16 +15,21 @@ type Notif = { id: number; app: string; subject: string; message: string; dateti
 const ROW = "flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left transition-colors hover:bg-muted/50";
 
 export default function Today() {
-  const events = useQuery({ queryKey: ["/api/events"], queryFn: () => fetchJson<{ data: Ev[] }>("/api/events").then((r) => r.data) });
-  const convos = useQuery({ queryKey: ["/api/conversations"], queryFn: () => fetchJson<{ data: Conv[] }>("/api/conversations").then((r) => r.data) });
-  const shares = useQuery({ queryKey: ["/api/shares/incoming"], queryFn: () => fetchJson<{ data: Share[] }>("/api/shares/incoming").then((r) => r.data) });
-  const notifs = useQuery({ queryKey: ["/api/notifications"], queryFn: () => fetchJson<{ data: Notif[] }>("/api/notifications").then((r) => r.data) });
+  // NOTE: these query keys are shared with TopBar/Sidebar/App, which cache the full
+  // `{ data: [...] }` response object. We must return the SAME shape here (not the
+  // unwrapped array) or the last writer wins the shared cache and the shapes clash —
+  // reading `.data` as an array then throws "filter is not a function" (blank screen).
+  const events = useQuery({ queryKey: ["/api/events"], queryFn: () => fetchJson<{ data: Ev[] }>("/api/events") });
+  const convos = useQuery({ queryKey: ["/api/conversations"], queryFn: () => fetchJson<{ data: Conv[] }>("/api/conversations") });
+  const shares = useQuery({ queryKey: ["/api/shares/incoming"], queryFn: () => fetchJson<{ data: Share[] }>("/api/shares/incoming") });
+  const notifs = useQuery({ queryKey: ["/api/notifications"], queryFn: () => fetchJson<{ data: Notif[] }>("/api/notifications") });
 
   // An event belongs to "today" if its time range overlaps today — this includes
   // multi-day events that started earlier and are still running.
   const dayStart = startOfDay(new Date());
   const dayEnd = endOfDay(new Date());
-  const todayEvents = (events.data || [])
+  const asArray = <T,>(r: { data?: T[] } | undefined): T[] => (Array.isArray(r?.data) ? r!.data : []);
+  const todayEvents = asArray<Ev>(events.data)
     .filter((e) => {
       try {
         const start = parseISO(e.startAt);
@@ -35,9 +40,9 @@ export default function Today() {
       }
     })
     .sort((a, b) => a.startAt.localeCompare(b.startAt));
-  const unread = (convos.data || []).filter((c) => (c.unreadCount || 0) > 0);
-  const incoming = shares.data || [];
-  const notifications = notifs.data || [];
+  const unread = asArray<Conv>(convos.data).filter((c) => (c.unreadCount || 0) > 0);
+  const incoming = asArray<Share>(shares.data);
+  const notifications = asArray<Notif>(notifs.data);
   const attentionCount = unread.length + incoming.length + notifications.length;
   const attentionLoading = convos.isLoading || shares.isLoading || notifs.isLoading;
 
