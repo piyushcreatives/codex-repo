@@ -6,10 +6,16 @@ const NEXTCLOUD_APP_PASSWORD_LABEL =
 const NEXTCLOUD_BOOTSTRAP_STRATEGY =
   process.env.NEXTCLOUD_BOOTSTRAP_STRATEGY || "exchange-or-direct";
 
-// Keycloak SSO via Nextcloud OAuth2 (see OAUTH_MIGRATION.md).
+// Keycloak SSO — the adapter is a DIRECT OIDC client of Keycloak (no Nextcloud
+// OAuth2 layer / consent screens). The Keycloak access token is stored on the
+// session and sent as a Bearer to Nextcloud, which validates + provisions it via
+// the user_oidc app (check-bearer). See OAUTH_MIGRATION.md.
 const OAUTH_CLIENT_ID = process.env.OAUTH_CLIENT_ID || "";
 const OAUTH_CLIENT_SECRET = process.env.OAUTH_CLIENT_SECRET || "";
 const OAUTH_REDIRECT_URI = process.env.OAUTH_REDIRECT_URI || "";
+const OAUTH_AUTHORIZE_URL = process.env.OAUTH_AUTHORIZE_URL || "";
+const OAUTH_TOKEN_URL = process.env.OAUTH_TOKEN_URL || "";
+const OAUTH_SCOPE = process.env.OAUTH_SCOPE || "openid profile email";
 
 export type DelegatedCredential = {
   type: "app-password";
@@ -248,7 +254,9 @@ export async function resolveCurrentUser(session: NextcloudSession) {
 
 // ── OAuth2 (Keycloak via Nextcloud) ─────────────────────────────────────────
 export function isOAuthConfigured() {
-  return Boolean(OAUTH_CLIENT_ID && OAUTH_CLIENT_SECRET && OAUTH_REDIRECT_URI);
+  return Boolean(
+    OAUTH_CLIENT_ID && OAUTH_CLIENT_SECRET && OAUTH_REDIRECT_URI && OAUTH_AUTHORIZE_URL && OAUTH_TOKEN_URL,
+  );
 }
 
 export function buildAuthorizeUrl(state: string) {
@@ -256,13 +264,14 @@ export function buildAuthorizeUrl(state: string) {
     response_type: "code",
     client_id: OAUTH_CLIENT_ID,
     redirect_uri: OAUTH_REDIRECT_URI,
+    scope: OAUTH_SCOPE,
     state,
   });
-  return `${NC_BASE_URL}/index.php/apps/oauth2/authorize?${params.toString()}`;
+  return `${OAUTH_AUTHORIZE_URL}?${params.toString()}`;
 }
 
 async function oauthTokenRequest(body: Record<string, string>) {
-  const response = await fetch(`${NC_BASE_URL}/index.php/apps/oauth2/api/v1/token`, {
+  const response = await fetch(OAUTH_TOKEN_URL, {
     method: "POST",
     headers: {
       "Content-Type": "application/x-www-form-urlencoded",
@@ -277,7 +286,7 @@ async function oauthTokenRequest(body: Record<string, string>) {
     access_token: string;
     refresh_token: string;
     expires_in: number;
-    user_id: string;
+    user_id?: string;
   }>;
 }
 
@@ -287,8 +296,11 @@ export async function exchangeOAuthCode(code: string) {
     code,
     redirect_uri: OAUTH_REDIRECT_URI,
   });
+  // Keycloak's token response has no user_id (that's Nextcloud-specific). Resolve the
+  // Nextcloud username by calling NC with the freshly-issued Keycloak access token
+  // (Bearer) — user_oidc validates it and provisions the user on first hit.
   const session: NextcloudSession = {
-    username: tok.user_id,
+    username: tok.user_id ?? "",
     oauth: {
       accessToken: tok.access_token,
       refreshToken: tok.refresh_token,
@@ -296,6 +308,7 @@ export async function exchangeOAuthCode(code: string) {
     },
   };
   const user = await resolveCurrentUser(session);
+  session.username = user.username;
   return { session, user };
 }
 
