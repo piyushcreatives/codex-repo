@@ -29,6 +29,7 @@ export default defineConfig(({ mode }) => {
       https: httpsEnabled,
       port,
       strictPort: true,
+      allowedHosts: ["cloud.icingtree.com", "localhost", "127.0.0.1"],
       proxy: {
         "/api": {
           target: apiProxyTarget,
